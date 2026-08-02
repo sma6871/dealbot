@@ -1,11 +1,32 @@
 #!/usr/bin/env python3
 """Fetch and score deals, print picks to stdout. No Telegram."""
 
-from fetch_and_score import ROOT, fetch_deals, load, require_env, score
+import argparse
+
+from fetch_and_score import (
+    CONFIG,
+    ROOT,
+    fetch_deals,
+    load,
+    require_scoring_keys,
+    score,
+)
+from providers import PROVIDERS
 
 
 def main():
-    require_env("GEMINI_API_KEY")
+    parser = argparse.ArgumentParser(description="Dry-run deal scoring (no Telegram).")
+    parser.add_argument(
+        "--provider",
+        choices=sorted(PROVIDERS),
+        help="Force one provider (skip fallback list). Default: config order.",
+    )
+    args = parser.parse_args()
+
+    if args.provider:
+        require_scoring_keys([args.provider])
+    else:
+        require_scoring_keys()
 
     rules = (ROOT / "rules.md").read_text(encoding="utf-8")
     seen = load("seen.json", [])
@@ -16,7 +37,12 @@ def main():
     if not deals:
         return
 
-    picks = score(deals, rules)
+    if args.provider:
+        print(f"provider forced: {args.provider}")
+    else:
+        print(f"providers: {', '.join(CONFIG['providers'])}")
+
+    picks = score(deals, rules, provider=args.provider)
     print(f"model picked {len(picks)}")
     if not picks:
         return

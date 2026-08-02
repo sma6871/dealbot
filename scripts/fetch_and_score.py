@@ -7,24 +7,44 @@ import os
 import re
 import sys
 import time
+import tomllib
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import feedparser
 import requests
 
+from providers import PROVIDERS
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 
 FEED_URL = "https://www.mydealz.de/rss/hot"
-MAX_CANDIDATES = 5          # how many I get asked about per run
-MAX_FEED_ITEMS = 60         # how many deals to send to the model
-LOOKBACK_HOURS = 26
 
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+
+def load_config():
+    path = ROOT / "config.toml"
+    with path.open("rb") as f:
+        cfg = tomllib.load(f)
+    scoring = cfg.get("scoring", {})
+    return {
+        "providers": scoring.get("providers", ["gemini", "groq"]),
+        "max_candidates": scoring.get("max_candidates", 5),
+        "max_feed_items": scoring.get("max_feed_items", 60),
+        "lookback_hours": scoring.get("lookback_hours", 26),
+        "gemini": cfg.get("gemini", {}),
+        "groq": cfg.get("groq", {}),
+    }
+
+
+CONFIG = load_config()
+MAX_CANDIDATES = CONFIG["max_candidates"]
+MAX_FEED_ITEMS = CONFIG["max_feed_items"]
+LOOKBACK_HOURS = CONFIG["lookback_hours"]
 
 
 def require_env(*names):
+    """Require every listed var (used for Telegram secrets)."""
     missing = [n for n in names if not os.environ.get(n)]
     if missing:
         print(
@@ -33,6 +53,30 @@ def require_env(*names):
             file=sys.stderr,
         )
         sys.exit(1)
+
+
+def require_scoring_keys(providers=None):
+    """Fail if none of the given providers has its api key set."""
+    names = providers if providers is not None else CONFIG["providers"]
+    available = []
+    checked = []
+    for name in names:
+        section = CONFIG.get(name, {})
+        env_name = section.get("api_key_env")
+        if not env_name:
+            continue
+        checked.append(env_name)
+        if os.environ.get(env_name):
+            available.append(name)
+    if available:
+        return
+    listed = checked or ["(no api_key_env configured)"]
+    print(
+        "Missing scoring API keys — need at least one of:\n"
+        + "\n".join(f"  - {n}" for n in listed),
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 # ---------- tiny json helpers ----------
@@ -121,58 +165,29 @@ Here are today's candidate deals from mydealz.de:
 </deals>
 
 Pick the {n} best deals according to the policy. Fewer is fine — if only two
-deals genuinely fit, return two. If none fit, return an empty array. Do not
+deals genuinely fit, return two. If none fit, return an empty picks list. Do not
 pad the list to reach {n}.
 
-Respond with ONLY a JSON array, no markdown fences, no preamble:
-[
-  {{"index": <the deal's index number>, "reason": "<one short sentence on why this fits the policy>"}}
-]
+Respond with ONLY a JSON object, no markdown fences, no preamble:
+{{"picks": [{{"index": <the deal's index number>, "reason": "<one short sentence on why this fits the policy>"}}]}}
 """
 
 
-def score(deals, rules):
-    listing = "\n".join(
-        f"[{i}] {d['title']}\n"
-        f"    temp: {d['temperature'] or 'n/a'} | price: {d['price'] or 'n/a'}\n"
-        f"    {d['summary'][:200]}"
-        for i, d in enumerate(deals)
-    )
-
-    prompt = PROMPT.format(rules=rules, deals=listing, n=MAX_CANDIDATES)
-
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:generateContent"
-    )
-    resp = requests.post(
-        url,
-        headers={
-            "x-goog-api-key": os.environ["GEMINI_API_KEY"],
-            "Content-Type": "application/json",
-        },
-        json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
-        },
-        timeout=90,
-    )
-    resp.raise_for_status()
-    payload = resp.json()
-
-    try:
-        text = payload["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError):
-        print(f"Unexpected Gemini response: {json.dumps(payload)[:800]}", file=sys.stderr)
-        return []
-
+def _parse_picks(text):
+    """Parse model text into a list of pick dicts. Accepts array or {"picks": [...]}."""
     text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
-    try:
-        picks = json.loads(text)
-    except json.JSONDecodeError:
-        print(f"Could not parse model output: {text[:500]}", file=sys.stderr)
-        return []
+    parsed = json.loads(text)
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        picks = parsed.get("picks")
+        if isinstance(picks, list):
+            return picks
+        raise ValueError("JSON object missing a 'picks' array")
+    raise ValueError(f"expected list or object, got {type(parsed).__name__}")
 
+
+def _picks_to_deals(picks, deals):
     out = []
     for p in picks:
         try:
@@ -182,6 +197,59 @@ def score(deals, rules):
         if 0 <= idx < len(deals):
             out.append({**deals[idx], "reason": str(p.get("reason", ""))[:300]})
     return out[:MAX_CANDIDATES]
+
+
+def score(deals, rules, provider=None):
+    listing = "\n".join(
+        f"[{i}] {d['title']}\n"
+        f"    temp: {d['temperature'] or 'n/a'} | price: {d['price'] or 'n/a'}\n"
+        f"    {d['summary'][:200]}"
+        for i, d in enumerate(deals)
+    )
+
+    prompt = PROMPT.format(rules=rules, deals=listing, n=MAX_CANDIDATES)
+    names = [provider] if provider else list(CONFIG["providers"])
+
+    for name in names:
+        call_fn = PROVIDERS.get(name)
+        if call_fn is None:
+            print(f"{name} failed: unknown provider", file=sys.stderr)
+            continue
+
+        section = CONFIG.get(name, {})
+        env_name = section.get("api_key_env")
+        if not env_name or not os.environ.get(env_name):
+            print(f"{name}: skipped ({env_name or 'api_key_env'} not set)", file=sys.stderr)
+            continue
+
+        api_key = os.environ[env_name]
+        model = section.get("model", "")
+        if not model:
+            print(f"{name} failed: no model in config", file=sys.stderr)
+            continue
+
+        try:
+            text = call_fn(prompt, model, api_key)
+        except (requests.RequestException, ValueError) as exc:
+            print(f"{name} failed: {exc}", file=sys.stderr)
+            continue
+
+        try:
+            raw_picks = _parse_picks(text)
+        except (json.JSONDecodeError, ValueError) as exc:
+            print(f"{name} failed: could not parse output ({exc}): {text[:500]}", file=sys.stderr)
+            continue
+
+        out = _picks_to_deals(raw_picks, deals)
+        if not out:
+            print(f"{name} failed: no valid picks in output", file=sys.stderr)
+            continue
+
+        print(f"scored with {name}")
+        return out
+
+    print("All scoring providers failed", file=sys.stderr)
+    sys.exit(1)
 
 
 # ---------- send ----------
@@ -222,7 +290,8 @@ def send_for_review(deal):
 # ---------- main ----------
 
 def main():
-    require_env("TELEGRAM_BOT_TOKEN", "TELEGRAM_ADMIN_CHAT_ID", "GEMINI_API_KEY")
+    require_env("TELEGRAM_BOT_TOKEN", "TELEGRAM_ADMIN_CHAT_ID")
+    require_scoring_keys()
 
     rules = (ROOT / "rules.md").read_text(encoding="utf-8")
     seen = load("seen.json", [])
