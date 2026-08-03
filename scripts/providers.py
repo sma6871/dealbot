@@ -1,15 +1,13 @@
-"""HTTP calls to scoring providers. Each returns the model's raw text."""
+"""Two LLM providers with the same signature. Dict dispatch, no abstractions."""
 
 import requests
 
+TIMEOUT = 90
 
-def call_gemini(prompt: str, model: str, api_key: str) -> str:
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent"
-    )
-    resp = requests.post(
-        url,
+
+def call_gemini(prompt, model, api_key):
+    r = requests.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
         json={
             "contents": [{"parts": [{"text": prompt}]}],
@@ -18,18 +16,18 @@ def call_gemini(prompt: str, model: str, api_key: str) -> str:
                 "responseMimeType": "application/json",
             },
         },
-        timeout=90,
+        timeout=TIMEOUT,
     )
-    resp.raise_for_status()
-    payload = resp.json()
+    r.raise_for_status()
+    data = r.json()
     try:
-        return payload["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError(f"unexpected Gemini response shape: {payload!r}"[:800]) from exc
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError) as exc:
+        raise ValueError(f"unexpected gemini response shape: {exc}") from exc
 
 
-def call_groq(prompt: str, model: str, api_key: str) -> str:
-    resp = requests.post(
+def call_groq(prompt, model, api_key):
+    r = requests.post(
         "https://api.groq.com/openai/v1/chat/completions",
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -41,17 +39,17 @@ def call_groq(prompt: str, model: str, api_key: str) -> str:
             "temperature": 0.2,
             "response_format": {"type": "json_object"},
         },
-        timeout=90,
+        timeout=TIMEOUT,
     )
-    resp.raise_for_status()
-    payload = resp.json()
+    r.raise_for_status()
+    data = r.json()
     try:
-        return payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError(f"unexpected Groq response shape: {payload!r}"[:800]) from exc
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError) as exc:
+        raise ValueError(f"unexpected groq response shape: {exc}") from exc
 
 
-PROVIDERS = {
+REGISTRY = {
     "gemini": call_gemini,
     "groq": call_groq,
 }

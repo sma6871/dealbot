@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Fetch mydealz deals, score them against rules.md, DM the top N for approval."""
+"""Fetch mydealz deals, score them against rules.md + brands.md, DM candidates.
+
+Everything after my first button tap is handled by the Cloudflare Worker.
+This script only produces candidates and writes them to KV.
+"""
 
 import html
 import json
@@ -7,95 +11,35 @@ import os
 import re
 import sys
 import time
-import tomllib
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
 
 import feedparser
 import requests
 
-from providers import PROVIDERS
+import config
+import kv
+from providers import REGISTRY
 
-ROOT = Path(__file__).resolve().parent.parent
-DATA = ROOT / "data"
-
-FEED_URL = "https://www.mydealz.de/rss/hot"
-
-
-def load_config():
-    path = ROOT / "config.toml"
-    with path.open("rb") as f:
-        cfg = tomllib.load(f)
-    scoring = cfg.get("scoring", {})
-    return {
-        "providers": scoring.get("providers", ["gemini", "groq"]),
-        "max_candidates": scoring.get("max_candidates", 5),
-        "max_feed_items": scoring.get("max_feed_items", 60),
-        "lookback_hours": scoring.get("lookback_hours", 26),
-        "gemini": cfg.get("gemini", {}),
-        "groq": cfg.get("groq", {}),
-    }
+PENDING_TTL = 60 * 60 * 24 * 3  # 3 days, matches the Worker
 
 
-CONFIG = load_config()
-MAX_CANDIDATES = CONFIG["max_candidates"]
-MAX_FEED_ITEMS = CONFIG["max_feed_items"]
-LOOKBACK_HOURS = CONFIG["lookback_hours"]
-
+# ---------- env ----------
 
 def require_env(*names):
-    """Require every listed var (used for Telegram secrets)."""
     missing = [n for n in names if not os.environ.get(n)]
     if missing:
-        print(
-            "Missing required environment variables:\n"
-            + "\n".join(f"  - {n}" for n in missing),
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        raise SystemExit("Missing environment variables: " + ", ".join(missing))
 
 
-def require_scoring_keys(providers=None):
-    """Fail if none of the given providers has its api key set."""
-    names = providers if providers is not None else CONFIG["providers"]
-    available = []
-    checked = []
-    for name in names:
-        section = CONFIG.get(name, {})
-        env_name = section.get("api_key_env")
-        if not env_name:
-            continue
-        checked.append(env_name)
-        if os.environ.get(env_name):
-            available.append(name)
-    if available:
-        return
-    listed = checked or ["(no api_key_env configured)"]
-    print(
-        "Missing scoring API keys — need at least one of:\n"
-        + "\n".join(f"  - {n}" for n in listed),
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
-# ---------- tiny json helpers ----------
-
-def load(name, default):
-    p = DATA / name
-    if not p.exists():
-        return default
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return default
-
-
-def save(name, obj):
-    DATA.mkdir(exist_ok=True)
-    (DATA / name).write_text(
-        json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+def available_providers():
+    """Providers from config that actually have their API key set."""
+    out = []
+    for name in config.PROVIDERS:
+        settings = config.PROVIDER_CONFIG.get(name, {})
+        key_env = settings.get("api_key_env")
+        if name in REGISTRY and key_env and os.environ.get(key_env):
+            out.append((name, settings))
+    return out
 
 
 # ---------- fetch ----------
@@ -105,58 +49,73 @@ def strip_html(s):
     return re.sub(r"\s+", " ", html.unescape(s)).strip()
 
 
+def parse_entry(entry, cutoff):
+    published = None
+    if getattr(entry, "published_parsed", None):
+        published = datetime.fromtimestamp(
+            time.mktime(entry.published_parsed), tz=timezone.utc
+        )
+    if published and published < cutoff:
+        return None
+
+    title = strip_html(entry.get("title", ""))
+    if not title:
+        return None
+
+    temp_match = re.search(r"(\d[\d.]*)\s*°", title)
+    price_match = re.search(r"(\d+[.,]?\d*)\s*€|€\s*(\d+[.,]?\d*)", title)
+
+    return {
+        "id": entry.get("id") or entry.get("link"),
+        "title": title,
+        "link": entry.get("link", ""),
+        "summary": strip_html(entry.get("summary", ""))[:400],
+        "temperature": temp_match.group(1).replace(".", "") if temp_match else None,
+        "price": (price_match.group(1) or price_match.group(2)) if price_match else None,
+        "published": published.isoformat() if published else None,
+    }
+
+
 def fetch_deals():
-    feed = feedparser.parse(FEED_URL)
-    if feed.bozo and not feed.entries:
-        print(f"Feed parse failed: {feed.get('bozo_exception')}", file=sys.stderr)
-        return []
+    """Read every configured feed, merge, dedupe by id keeping first occurrence."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=config.LOOKBACK_HOURS)
+    deals, seen_ids = [], set()
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
-    deals = []
-
-    for e in feed.entries:
-        published = None
-        if getattr(e, "published_parsed", None):
-            published = datetime.fromtimestamp(
-                time.mktime(e.published_parsed), tz=timezone.utc
-            )
-        if published and published < cutoff:
+    for url in config.FEED_URLS:
+        feed = feedparser.parse(url)
+        if feed.bozo and not feed.entries:
+            print(f"  {url}: parse failed ({feed.get('bozo_exception')})", file=sys.stderr)
             continue
 
-        title = strip_html(e.get("title", ""))
-        if not title:
-            continue
+        added = 0
+        for entry in feed.entries:
+            deal = parse_entry(entry, cutoff)
+            if not deal or not deal["id"] or deal["id"] in seen_ids:
+                continue
+            seen_ids.add(deal["id"])
+            deals.append(deal)
+            added += 1
+        print(f"  {url}: {added} new")
 
-        # Temperature is usually embedded in the title of /rss/hot, e.g. "1234°"
-        temp_match = re.search(r"(\d[\d.]*)\s*°", title)
-        temperature = temp_match.group(1).replace(".", "") if temp_match else None
+        if len(deals) >= config.MAX_FEED_ITEMS:
+            break
 
-        # Price often appears as "12,99€" or "€12.99"
-        price_match = re.search(r"(\d+[.,]?\d*)\s*€|€\s*(\d+[.,]?\d*)", title)
-        price = (price_match.group(1) or price_match.group(2)) if price_match else None
-
-        deals.append({
-            "id": e.get("id") or e.get("link"),
-            "title": title,
-            "link": e.get("link", ""),
-            "summary": strip_html(e.get("summary", ""))[:400],
-            "temperature": temperature,
-            "price": price,
-            "published": published.isoformat() if published else None,
-        })
-
-    return deals[:MAX_FEED_ITEMS]
+    return deals[: config.MAX_FEED_ITEMS]
 
 
 # ---------- score ----------
 
-PROMPT = """You are the editorial filter for a small Telegram deals channel.
+PROMPT = """You are the editorial filter for a small Telegram deals channel in Berlin.
 
-Here is the channel's selection policy. Follow it strictly.
+Follow this policy strictly. It is deliberately restrictive.
 
 <policy>
 {rules}
 </policy>
+
+<brands>
+{brands}
+</brands>
 
 Here are today's candidate deals from mydealz.de:
 
@@ -164,111 +123,105 @@ Here are today's candidate deals from mydealz.de:
 {deals}
 </deals>
 
-Pick the {n} best deals according to the policy. Fewer is fine — if only two
-deals genuinely fit, return two. If none fit, return an empty picks list. Do not
-pad the list to reach {n}.
+Pick at most {n} deals that fit the policy. Fewer is strongly preferred over
+more. If only two genuinely fit, return two. If none fit, return an empty list.
+Never pad the list to reach {n}.
 
-Respond with ONLY a JSON object, no markdown fences, no preamble:
-{{"picks": [{{"index": <the deal's index number>, "reason": "<one short sentence on why this fits the policy>"}}]}}
+Where the policy says to flag something for manual verification, prefix that
+deal's reason with "VERIFY: ".
+
+Respond with ONLY this JSON object, no markdown fences, no preamble:
+{{"picks": [{{"index": <deal index number>, "reason": "<one short sentence>"}}]}}
 """
 
 
-def _parse_picks(text):
-    """Parse model text into a list of pick dicts. Accepts array or {"picks": [...]}."""
-    text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
-    parsed = json.loads(text)
-    if isinstance(parsed, list):
-        return parsed
-    if isinstance(parsed, dict):
-        picks = parsed.get("picks")
-        if isinstance(picks, list):
-            return picks
-        raise ValueError("JSON object missing a 'picks' array")
-    raise ValueError(f"expected list or object, got {type(parsed).__name__}")
-
-
-def _picks_to_deals(picks, deals):
-    out = []
-    for p in picks:
-        try:
-            idx = int(p["index"])
-        except (KeyError, ValueError, TypeError):
-            continue
-        if 0 <= idx < len(deals):
-            out.append({**deals[idx], "reason": str(p.get("reason", ""))[:300]})
-    return out[:MAX_CANDIDATES]
-
-
-def score(deals, rules, provider=None):
+def build_prompt(deals):
     listing = "\n".join(
         f"[{i}] {d['title']}\n"
         f"    temp: {d['temperature'] or 'n/a'} | price: {d['price'] or 'n/a'}\n"
         f"    {d['summary'][:200]}"
         for i, d in enumerate(deals)
     )
+    return PROMPT.format(
+        rules=config.read_doc("rules.md"),
+        brands=config.read_doc("brands.md"),
+        deals=listing,
+        n=config.MAX_CANDIDATES,
+    )
 
-    prompt = PROMPT.format(rules=rules, deals=listing, n=MAX_CANDIDATES)
-    names = [provider] if provider else list(CONFIG["providers"])
 
-    for name in names:
-        call_fn = PROVIDERS.get(name)
-        if call_fn is None:
-            print(f"{name} failed: unknown provider", file=sys.stderr)
+def extract_picks(raw, deals):
+    """Accept either {"picks": [...]} or a bare [...] so both providers work."""
+    text = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
+    parsed = json.loads(text)
+
+    if isinstance(parsed, dict):
+        items = parsed.get("picks", [])
+    elif isinstance(parsed, list):
+        items = parsed
+    else:
+        raise ValueError(f"unexpected JSON type: {type(parsed).__name__}")
+
+    out = []
+    for item in items:
+        if not isinstance(item, dict):
             continue
-
-        section = CONFIG.get(name, {})
-        env_name = section.get("api_key_env")
-        if not env_name or not os.environ.get(env_name):
-            print(f"{name}: skipped ({env_name or 'api_key_env'} not set)", file=sys.stderr)
-            continue
-
-        api_key = os.environ[env_name]
-        model = section.get("model", "")
-        if not model:
-            print(f"{name} failed: no model in config", file=sys.stderr)
-            continue
-
         try:
-            text = call_fn(prompt, model, api_key)
-        except (requests.RequestException, ValueError) as exc:
-            print(f"{name} failed: {exc}", file=sys.stderr)
+            idx = int(item["index"])
+        except (KeyError, ValueError, TypeError):
             continue
+        if 0 <= idx < len(deals):
+            out.append({**deals[idx], "reason": str(item.get("reason", ""))[:300]})
+    return out[: config.MAX_CANDIDATES]
 
+
+def score(deals):
+    """Try providers in config order. First one that returns usable picks wins."""
+    providers = available_providers()
+    if not providers:
+        raise SystemExit(
+            "No usable provider. Set an API key for one of: "
+            + ", ".join(config.PROVIDERS)
+        )
+
+    prompt = build_prompt(deals)
+    failures = []
+
+    for name, settings in providers:
+        model = settings.get("model", "")
+        api_key = os.environ[settings["api_key_env"]]
         try:
-            raw_picks = _parse_picks(text)
-        except (json.JSONDecodeError, ValueError) as exc:
-            print(f"{name} failed: could not parse output ({exc}): {text[:500]}", file=sys.stderr)
+            raw = REGISTRY[name](prompt, model, api_key)
+            picks = extract_picks(raw, deals)
+        except (requests.RequestException, json.JSONDecodeError, ValueError) as exc:
+            failures.append(f"{name}: {exc}")
+            print(f"  {name} failed: {exc}", file=sys.stderr)
             continue
 
-        out = _picks_to_deals(raw_picks, deals)
-        if not out:
-            print(f"{name} failed: no valid picks in output", file=sys.stderr)
-            continue
+        if not picks:
+            # An empty list is a legitimate answer, not a failure.
+            print(f"  {name} returned no picks (valid outcome)")
+            return []
+        print(f"  scored by {name} ({model})")
+        return picks
 
-        print(f"scored with {name}")
-        return out
-
-    print("All scoring providers failed", file=sys.stderr)
-    sys.exit(1)
+    raise SystemExit("All providers failed:\n  " + "\n  ".join(failures))
 
 
 # ---------- send ----------
 
-def send_for_review(deal):
-    bot_token = os.environ["TELEGRAM_BOT_TOKEN"]
-    admin_chat_id = os.environ["TELEGRAM_ADMIN_CHAT_ID"]
-    tg = f"https://api.telegram.org/bot{bot_token}"
-
+def send_for_review(deal, token, chat_id):
+    verify = deal["reason"].startswith("VERIFY:")
     text = (
-        f"<b>{html.escape(deal['title'])}</b>\n\n"
+        f"{'⚠️ ' if verify else ''}<b>{html.escape(deal['title'])}</b>\n\n"
         f"<i>{html.escape(deal['reason'])}</i>\n\n"
         f"🌡 {deal['temperature'] or 'n/a'}\n"
         f"{html.escape(deal['link'])}"
     )
-    resp = requests.post(
-        f"{tg}/sendMessage",
+    r = requests.post(
+        f"https://api.telegram.org/bot{token}/sendMessage",
         json={
-            "chat_id": admin_chat_id,
+            "chat_id": chat_id,
             "text": text,
             "parse_mode": "HTML",
             "link_preview_options": {"is_disabled": True},
@@ -281,40 +234,47 @@ def send_for_review(deal):
         },
         timeout=30,
     )
-    if not resp.ok:
-        print(f"sendMessage failed: {resp.text}", file=sys.stderr)
+    if not r.ok:
+        print(f"sendMessage failed: {r.text}", file=sys.stderr)
         return None
-    return resp.json()["result"]["message_id"]
+    return r.json()["result"]["message_id"]
 
 
 # ---------- main ----------
 
 def main():
-    require_env("TELEGRAM_BOT_TOKEN", "TELEGRAM_ADMIN_CHAT_ID")
-    require_scoring_keys()
+    require_env(
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_ADMIN_CHAT_ID",
+        "CF_ACCOUNT_ID",
+        "CF_KV_NAMESPACE_ID",
+        "CF_API_TOKEN",
+    )
+    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    chat_id = os.environ["TELEGRAM_ADMIN_CHAT_ID"]
 
-    rules = (ROOT / "rules.md").read_text(encoding="utf-8")
-    seen = load("seen.json", [])
+    print("Fetching feeds:")
+    seen = kv.get_json("seen", []) or []
     seen_set = set(seen)
 
     deals = [d for d in fetch_deals() if d["id"] not in seen_set]
-    print(f"{len(deals)} new deals in feed")
+    print(f"{len(deals)} unseen deals")
     if not deals:
         return
 
-    picks = score(deals, rules)
-    print(f"model picked {len(picks)}")
+    print("Scoring:")
+    picks = score(deals)
+    print(f"{len(picks)} candidates")
 
-    pending = load("pending.json", {})
     for deal in picks:
-        mid = send_for_review(deal)
+        mid = send_for_review(deal, token, chat_id)
         if mid:
-            pending[str(mid)] = deal
+            kv.put_json(f"pending:{mid}", deal, expiration_ttl=PENDING_TTL)
+            print(f"  sent {mid}: {deal['title'][:60]}")
 
-    # Mark everything we looked at as seen, so we never re-evaluate it.
+    # Mark everything evaluated as seen so we never re-score it.
     seen.extend(d["id"] for d in deals)
-    save("seen.json", seen[-3000:])
-    save("pending.json", pending)
+    kv.put_json("seen", seen[-3000:])
 
 
 if __name__ == "__main__":

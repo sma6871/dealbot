@@ -1,59 +1,68 @@
 #!/usr/bin/env python3
-"""Fetch and score deals, print picks to stdout. No Telegram."""
+"""Score today's deals and print the picks. Sends nothing, touches no state.
+
+Use this while tuning rules.md and brands.md.
+
+    export GEMINI_API_KEY=...
+    python scripts/dry_run.py
+    python scripts/dry_run.py --provider groq
+    python scripts/dry_run.py --show-all
+"""
 
 import argparse
+import os
+import sys
 
-from fetch_and_score import (
-    CONFIG,
-    ROOT,
-    fetch_deals,
-    load,
-    require_scoring_keys,
-    score,
-)
-from providers import PROVIDERS
+import config
+from fetch_and_score import available_providers, build_prompt, extract_picks, fetch_deals
+from providers import REGISTRY
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Dry-run deal scoring (no Telegram).")
-    parser.add_argument(
-        "--provider",
-        choices=sorted(PROVIDERS),
-        help="Force one provider (skip fallback list). Default: config order.",
-    )
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--provider", help="force one provider, skipping the fallback list")
+    ap.add_argument("--show-all", action="store_true", help="also list every fetched deal")
+    args = ap.parse_args()
 
-    if args.provider:
-        require_scoring_keys([args.provider])
-    else:
-        require_scoring_keys()
-
-    rules = (ROOT / "rules.md").read_text(encoding="utf-8")
-    seen = load("seen.json", [])
-    seen_set = set(seen)
-
-    deals = [d for d in fetch_deals() if d["id"] not in seen_set]
-    print(f"{len(deals)} new deals in feed")
+    print("Fetching feeds:")
+    deals = fetch_deals()
+    print(f"{len(deals)} deals\n")
     if not deals:
         return
 
-    if args.provider:
-        print(f"provider forced: {args.provider}")
-    else:
-        print(f"providers: {', '.join(CONFIG['providers'])}")
+    if args.show_all:
+        print("All fetched deals:")
+        for i, d in enumerate(deals):
+            print(f"  [{i:>3}] {d['temperature'] or '---':>5}° {d['title'][:90]}")
+        print()
 
-    picks = score(deals, rules, provider=args.provider)
-    print(f"model picked {len(picks)}")
+    providers = available_providers()
+    if args.provider:
+        providers = [(n, s) for n, s in providers if n == args.provider]
+        if not providers:
+            raise SystemExit(
+                f"Provider '{args.provider}' has no API key set, or isn't in config.toml"
+            )
+
+    if not providers:
+        raise SystemExit("No provider has its API key set")
+
+    name, settings = providers[0]
+    model = settings.get("model", "")
+    print(f"Scoring with {name} ({model})...\n")
+
+    raw = REGISTRY[name](build_prompt(deals), model, os.environ[settings["api_key_env"]])
+    picks = extract_picks(raw, deals)
+
     if not picks:
+        print("No picks. That's a valid outcome if nothing today fits the policy.")
         return
 
+    print(f"{len(picks)} picks:\n")
     for i, deal in enumerate(picks, 1):
-        print()
-        print(f"--- pick {i} ---")
-        print(deal["title"])
-        print(f"temp: {deal.get('temperature') or 'n/a'} | price: {deal.get('price') or 'n/a'}")
-        print(deal.get("reason", ""))
-        print(deal.get("link", ""))
+        print(f"{i}. {deal['title']}")
+        print(f"   {deal['temperature'] or 'n/a'}° | {deal['reason']}")
+        print(f"   {deal['link']}\n")
 
 
 if __name__ == "__main__":
