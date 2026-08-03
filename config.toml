@@ -1,13 +1,29 @@
+# dealbot configuration
+# Edit this file from the GitHub web UI whenever you want to retune.
+
 [scoring]
 providers = ["gemini", "groq"]   # tried in order, first success wins
-max_candidates = 5
-max_feed_items = 60
-lookback_hours = 26
+max_candidates = 10             # how many I get asked about per run
+max_feed_items = 80             # how many deals the model sees
+lookback_hours = 14             # ~half a day, since we run twice daily
+
+[feeds]
+# Verified working. /rss/alle returns nothing, don't use it.
+urls = [
+  "https://www.mydealz.de/rss/hot",     # hot posts, includes temperature
+  "https://www.mydealz.de/rss",         # editorial highlights
+  "https://www.mydealz.de/rss/deals",   # hot deals only
+]
 
 [gemini]
 model = "gemini-flash-latest"
 api_key_env = "GEMINI_API_KEY"
 
 [groq]
-model = "openai/gpt-oss-120b"
+# VERIFY at console.groq.com/docs/models before first run — IDs get retired.
+model = "llama-3.3-70b-versatile"
 api_key_env = "GROQ_API_KEY"
+
+[posting]
+channel_handle = "@berliner_deals"
+languages = ["en", "fa"]        # English block, separator, Persian block
