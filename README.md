@@ -39,12 +39,10 @@ python scripts/dry_run.py --provider groq    # force one provider
 
 Does not send Telegram messages and does not update `data/`.
 
-## Manual workflow runs
-
-In the GitHub repo: **Actions** → pick the workflow → **Run workflow**.
+## GitHub Actions
 
 - **Fetch and score deals** — pull feed, score, DM candidates
-- **Process my taps** — handle Post/Skip callbacks and optional reply-reasons
+- **Sync worker decisions** — health check and drain KV decisions into `data/log.csv`
 
 ## Decision log
 
