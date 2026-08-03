@@ -1,46 +1,25 @@
 #!/usr/bin/env python3
 """Fetch mydealz deals, score them against rules.md, DM the top N for approval."""
 
+from __future__ import annotations
+
 import html
 import json
 import os
 import re
 import sys
 import time
-import tomllib
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import feedparser
 import requests
 
-from providers import PROVIDERS
+from config import FEED_URLS, LOOKBACK_HOURS, MAX_CANDIDATES, MAX_FEED_ITEMS, PROVIDERS, PROVIDER_CONFIG, ROOT, read_doc
+from providers import PROVIDERS as PROVIDER_CALLS
 
-ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
-
-FEED_URL = "https://www.mydealz.de/rss/hot"
-
-
-def load_config():
-    path = ROOT / "config.toml"
-    with path.open("rb") as f:
-        cfg = tomllib.load(f)
-    scoring = cfg.get("scoring", {})
-    return {
-        "providers": scoring.get("providers", ["gemini", "groq"]),
-        "max_candidates": scoring.get("max_candidates", 5),
-        "max_feed_items": scoring.get("max_feed_items", 60),
-        "lookback_hours": scoring.get("lookback_hours", 26),
-        "gemini": cfg.get("gemini", {}),
-        "groq": cfg.get("groq", {}),
-    }
-
-
-CONFIG = load_config()
-MAX_CANDIDATES = CONFIG["max_candidates"]
-MAX_FEED_ITEMS = CONFIG["max_feed_items"]
-LOOKBACK_HOURS = CONFIG["lookback_hours"]
+DEFAULT_FEEDS = ["https://www.mydealz.de/rss/hot"]
 
 
 def require_env(*names):
@@ -57,11 +36,11 @@ def require_env(*names):
 
 def require_scoring_keys(providers=None):
     """Fail if none of the given providers has its api key set."""
-    names = providers if providers is not None else CONFIG["providers"]
+    names = providers if providers is not None else PROVIDERS
     available = []
     checked = []
     for name in names:
-        section = CONFIG.get(name, {})
+        section = PROVIDER_CONFIG.get(name, {})
         env_name = section.get("api_key_env")
         if not env_name:
             continue
@@ -93,9 +72,7 @@ def load(name, default):
 
 def save(name, obj):
     DATA.mkdir(exist_ok=True)
-    (DATA / name).write_text(
-        json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    (DATA / name).write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 # ---------- fetch ----------
@@ -105,47 +82,57 @@ def strip_html(s):
     return re.sub(r"\s+", " ", html.unescape(s)).strip()
 
 
-def fetch_deals():
-    feed = feedparser.parse(FEED_URL)
+def _parse_feed(url):
+    feed = feedparser.parse(url)
     if feed.bozo and not feed.entries:
-        print(f"Feed parse failed: {feed.get('bozo_exception')}", file=sys.stderr)
+        print(f"Feed parse failed for {url}: {feed.get('bozo_exception')}", file=sys.stderr)
         return []
+    return feed.entries
 
+
+def fetch_deals():
+    feed_urls = list(FEED_URLS or DEFAULT_FEEDS)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
     deals = []
+    seen_ids = set()
 
-    for e in feed.entries:
-        published = None
-        if getattr(e, "published_parsed", None):
-            published = datetime.fromtimestamp(
-                time.mktime(e.published_parsed), tz=timezone.utc
-            )
-        if published and published < cutoff:
-            continue
+    for url in feed_urls:
+        for e in _parse_feed(url):
+            published = None
+            if getattr(e, "published_parsed", None):
+                published = datetime.fromtimestamp(time.mktime(e.published_parsed), tz=timezone.utc)
+            if published and published < cutoff:
+                continue
 
-        title = strip_html(e.get("title", ""))
-        if not title:
-            continue
+            title = strip_html(e.get("title", ""))
+            if not title:
+                continue
 
-        # Temperature is usually embedded in the title of /rss/hot, e.g. "1234°"
-        temp_match = re.search(r"(\d[\d.]*)\s*°", title)
-        temperature = temp_match.group(1).replace(".", "") if temp_match else None
+            temp_match = re.search(r"(\d[\d.]*)\s*°", title)
+            temperature = temp_match.group(1).replace(".", "") if temp_match else None
 
-        # Price often appears as "12,99€" or "€12.99"
-        price_match = re.search(r"(\d+[.,]?\d*)\s*€|€\s*(\d+[.,]?\d*)", title)
-        price = (price_match.group(1) or price_match.group(2)) if price_match else None
+            price_match = re.search(r"(\d+[.,]?\d*)\s*€|€\s*(\d+[.,]?\d*)", title)
+            price = (price_match.group(1) or price_match.group(2)) if price_match else None
 
-        deals.append({
-            "id": e.get("id") or e.get("link"),
-            "title": title,
-            "link": e.get("link", ""),
-            "summary": strip_html(e.get("summary", ""))[:400],
-            "temperature": temperature,
-            "price": price,
-            "published": published.isoformat() if published else None,
-        })
+            deal_id = e.get("id") or e.get("link")
+            if not deal_id or deal_id in seen_ids:
+                continue
+            seen_ids.add(deal_id)
 
-    return deals[:MAX_FEED_ITEMS]
+            deals.append({
+                "id": deal_id,
+                "title": title,
+                "link": e.get("link", ""),
+                "summary": strip_html(e.get("summary", ""))[:400],
+                "temperature": temperature,
+                "price": price,
+                "published": published.isoformat() if published else None,
+            })
+
+            if len(deals) >= MAX_FEED_ITEMS:
+                return deals
+
+    return deals
 
 
 # ---------- score ----------
@@ -208,15 +195,15 @@ def score(deals, rules, provider=None):
     )
 
     prompt = PROMPT.format(rules=rules, deals=listing, n=MAX_CANDIDATES)
-    names = [provider] if provider else list(CONFIG["providers"])
+    names = [provider] if provider else list(PROVIDERS)
 
     for name in names:
-        call_fn = PROVIDERS.get(name)
+        call_fn = PROVIDER_CALLS.get(name)
         if call_fn is None:
             print(f"{name} failed: unknown provider", file=sys.stderr)
             continue
 
-        section = CONFIG.get(name, {})
+        section = PROVIDER_CONFIG.get(name, {})
         env_name = section.get("api_key_env")
         if not env_name or not os.environ.get(env_name):
             print(f"{name}: skipped ({env_name or 'api_key_env'} not set)", file=sys.stderr)
@@ -293,7 +280,7 @@ def main():
     require_env("TELEGRAM_BOT_TOKEN", "TELEGRAM_ADMIN_CHAT_ID")
     require_scoring_keys()
 
-    rules = (ROOT / "rules.md").read_text(encoding="utf-8")
+    rules = read_doc("rules.md")
     seen = load("seen.json", [])
     seen_set = set(seen)
 
@@ -311,7 +298,6 @@ def main():
         if mid:
             pending[str(mid)] = deal
 
-    # Mark everything we looked at as seen, so we never re-evaluate it.
     seen.extend(d["id"] for d in deals)
     save("seen.json", seen[-3000:])
     save("pending.json", pending)
