@@ -1,0 +1,23 @@
+name = "dealbot"
+main = "index.js"
+compatibility_date = "2025-01-01"
+
+# Create the namespace once, then paste its id here:
+#   npx wrangler kv namespace create DEALBOT
+[[kv_namespaces]]
+binding = "DEALBOT"
+id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE"
+
+[vars]
+FEED_URLS = "https://www.mydealz.de/rss/hot,https://www.mydealz.de/rss,https://www.mydealz.de/rss/deals"
+GEMINI_MODEL = "gemini-flash-latest"
+GROQ_MODEL = "llama-3.3-70b-versatile"
+
+# Secrets — set these with `npx wrangler secret put NAME`, never put them here:
+#   TELEGRAM_BOT_TOKEN
+#   TELEGRAM_ADMIN_CHAT_ID
+#   TELEGRAM_CHANNEL_ID
+#   GEMINI_API_KEY
+#   GROQ_API_KEY
+#   WEBHOOK_SECRET          (any random string you invent)
+#   POST_TEMPLATE           (paste the contents of ../post_template.md)
