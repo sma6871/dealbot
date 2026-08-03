@@ -9,5 +9,5 @@ model = "gemini-flash-latest"
 api_key_env = "GEMINI_API_KEY"
 
 [groq]
-model = "llama-3.3-70b-versatile"
+model = "openai/gpt-oss-120b"
 api_key_env = "GROQ_API_KEY"
