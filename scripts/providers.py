@@ -1,5 +1,7 @@
 """HTTP calls to scoring providers. Each returns the model's raw text."""
 
+from __future__ import annotations
+
 import requests
 
 
