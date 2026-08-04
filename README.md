@@ -3,6 +3,8 @@
 Curates deals from mydealz.de into a small Telegram channel. Low volume by
 design: the filter is deliberately restrictive and rejects by default.
 
+Day-to-day operating guide: [USAGE.md](USAGE.md)
+
 ## How it works
 
 Two halves, because they have different needs.
