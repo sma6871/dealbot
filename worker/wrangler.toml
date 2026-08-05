@@ -6,7 +6,7 @@ compatibility_date = "2025-01-01"
 #   npx wrangler kv namespace create DEALBOT
 [[kv_namespaces]]
 binding = "DEALBOT"
-id = "78d5605db4f24692a49dfb7dcd6a3ba9"
+id = "b190a08241dc471ea80161ae4fe09a43"
 
 [vars]
 FEED_URLS = "https://www.mydealz.de/rss/hot,https://www.mydealz.de/rss,https://www.mydealz.de/rss/deals"
