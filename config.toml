@@ -7,7 +7,15 @@ max_candidates = 10             # how many I get asked about per run
 max_feed_items = 80             # how many deals the model sees
 lookback_hours = 14             # ~half a day, since we run twice daily
 
+[source]
+# GraphQL gives full descriptions, the compare-at price, and the merchant name.
+# It's a private API, so RSS is used automatically if it fails.
+use_graphql = true
+# Descriptions can run to 10k chars. This caps what goes into the prompt.
+description_chars = 1500
+
 [feeds]
+# Only used as fallback when GraphQL is unavailable.
 # Verified working. /rss/alle returns nothing, don't use it.
 urls = [
   "https://www.mydealz.de/rss/hot",     # hot posts, includes temperature

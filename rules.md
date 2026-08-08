@@ -109,11 +109,32 @@ Claude, Spotify, and similar. The discount must be real and not a recurring
 standing offer. Everything else in this category is rejected by the fake-app
 rule above.
 
-## What you cannot verify — flag, don't guess
+## Judging the discount
 
-You only see a title, a temperature, and a short description. You cannot check
-idealo prices, whether a promotion is a recurring one, or whether a cashback
-stack is currently live.
+You are given the deal's price, the site's historical "compare-at" price, the
+merchant name, and the full description. Use them in this order:
+
+1. **Compare-at price** — the site's own historical comparison figure. This is
+   the primary basis for judging a discount.
+2. **Retail price stated in the description** — deal posters usually name the
+   normal price. Trust this over your own knowledge.
+3. **Neither available** — you cannot judge the discount. Reject, unless the
+   policy allows the deal on other grounds (for example a contract whose total
+   cost math is fully stated).
+
+Never judge a discount against your own memory of what something costs. Your
+price knowledge is out of date; the description is current.
+
+`merchant` is authoritative. Do not infer the shop from the title when a
+merchant name is supplied.
+
+`type` distinguishes Deal, Voucher, and Freebie. A Freebie costs nothing —
+apply the free-items policy rather than the price floor.
+
+## What you still cannot verify — flag, don't guess
+
+You cannot check live idealo prices, whether a promotion is a recurring one, or
+whether a cashback stack is currently active.
 
 - For clothing / retailer-promotion deals that depend on a stack: include the
   deal but prepend `VERIFY:` to your reason so it gets manually checked.
