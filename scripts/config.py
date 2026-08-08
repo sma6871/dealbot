@@ -31,6 +31,10 @@ LOOKBACK_HOURS = _scoring.get("lookback_hours", DEFAULTS["lookback_hours"])
 
 FEED_URLS = _cfg.get("feeds", {}).get("urls", DEFAULTS["feeds"])
 
+_source = _cfg.get("source", {})
+USE_GRAPHQL = _source.get("use_graphql", True)
+DESCRIPTION_CHARS = _source.get("description_chars", 1500)
+
 # Per-provider settings: {"gemini": {"model": ..., "api_key_env": ...}, ...}
 PROVIDER_CONFIG = {name: _cfg.get(name, {}) for name in PROVIDERS}
 

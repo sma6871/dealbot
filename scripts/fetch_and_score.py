@@ -10,14 +10,12 @@ import json
 import os
 import re
 import sys
-import time
-from datetime import datetime, timezone, timedelta
 
-import feedparser
 import requests
 
 import config
 import kv
+import mydealz
 from providers import REGISTRY
 
 PENDING_TTL = 60 * 60 * 24 * 3  # 3 days, matches the Worker
@@ -44,63 +42,13 @@ def available_providers():
 
 # ---------- fetch ----------
 
-def strip_html(s):
-    s = re.sub(r"<[^>]+>", " ", s or "")
-    return re.sub(r"\s+", " ", html.unescape(s)).strip()
-
-
-def parse_entry(entry, cutoff):
-    published = None
-    if getattr(entry, "published_parsed", None):
-        published = datetime.fromtimestamp(
-            time.mktime(entry.published_parsed), tz=timezone.utc
-        )
-    if published and published < cutoff:
-        return None
-
-    title = strip_html(entry.get("title", ""))
-    if not title:
-        return None
-
-    temp_match = re.search(r"(\d[\d.]*)\s*°", title)
-    price_match = re.search(r"(\d+[.,]?\d*)\s*€|€\s*(\d+[.,]?\d*)", title)
-
-    return {
-        "id": entry.get("id") or entry.get("link"),
-        "title": title,
-        "link": entry.get("link", ""),
-        "summary": strip_html(entry.get("summary", ""))[:400],
-        "temperature": temp_match.group(1).replace(".", "") if temp_match else None,
-        "price": (price_match.group(1) or price_match.group(2)) if price_match else None,
-        "published": published.isoformat() if published else None,
-    }
-
-
 def fetch_deals():
-    """Read every configured feed, merge, dedupe by id keeping first occurrence."""
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=config.LOOKBACK_HOURS)
-    deals, seen_ids = [], set()
-
-    for url in config.FEED_URLS:
-        feed = feedparser.parse(url)
-        if feed.bozo and not feed.entries:
-            print(f"  {url}: parse failed ({feed.get('bozo_exception')})", file=sys.stderr)
-            continue
-
-        added = 0
-        for entry in feed.entries:
-            deal = parse_entry(entry, cutoff)
-            if not deal or not deal["id"] or deal["id"] in seen_ids:
-                continue
-            seen_ids.add(deal["id"])
-            deals.append(deal)
-            added += 1
-        print(f"  {url}: {added} new")
-
-        if len(deals) >= config.MAX_FEED_ITEMS:
-            break
-
-    return deals[: config.MAX_FEED_ITEMS]
+    """Delegates to the mydealz client: GraphQL first, RSS as fallback."""
+    return mydealz.fetch_deals(
+        lookback_hours=config.LOOKBACK_HOURS,
+        max_items=config.MAX_FEED_ITEMS,
+        use_graphql=config.USE_GRAPHQL,
+    )
 
 
 # ---------- score ----------
@@ -127,6 +75,17 @@ Pick at most {n} deals that fit the policy. Fewer is strongly preferred over
 more. If only two genuinely fit, return two. If none fit, return an empty list.
 Never pad the list to reach {n}.
 
+Each deal gives you facts followed by its full description. Use them:
+- "compare-at" is the site's historical comparison price. Judge the discount
+  against it, and against any retail price stated in the description. Do not
+  rely on your own memory of what things cost.
+- "merchant" is authoritative for retailer rules. Do not infer the shop from
+  the title when a merchant is given.
+- "type Freebie" means it costs nothing. Apply the free-items policy.
+- If a deal has no compare-at price and the description states no retail price,
+  you cannot judge the discount. Reject it unless the policy clearly allows it
+  on other grounds.
+
 Where the policy says to flag something for manual verification, prefix that
 deal's reason with "VERIFY: ".
 
@@ -135,13 +94,35 @@ Respond with ONLY this JSON object, no markdown fences, no preamble:
 """
 
 
+def format_deal(i, deal):
+    """One deal as facts the model can reason about, plus the description."""
+    price = deal.get("price")
+    was = deal.get("next_best_price")
+
+    facts = [f"temp {deal.get('temperature') if deal.get('temperature') is not None else 'n/a'}"]
+    if price is not None:
+        facts.append(f"price EUR {price}")
+    if was is not None:
+        facts.append(f"compare-at EUR {was}")
+        if price:
+            try:
+                off = round((1 - float(price) / float(was)) * 100)
+                facts.append(f"{off}% off")
+            except (ZeroDivisionError, ValueError, TypeError):
+                pass
+    if deal.get("merchant"):
+        facts.append(f"merchant {deal['merchant']}")
+    if deal.get("type"):
+        facts.append(f"type {deal['type']}")
+    if deal.get("voucher_code"):
+        facts.append("has voucher code")
+
+    desc = (deal.get("description") or "")[: config.DESCRIPTION_CHARS]
+    return f"[{i}] {deal['title']}\n    {' | '.join(facts)}\n    {desc}"
+
+
 def build_prompt(deals):
-    listing = "\n".join(
-        f"[{i}] {d['title']}\n"
-        f"    temp: {d['temperature'] or 'n/a'} | price: {d['price'] or 'n/a'}\n"
-        f"    {d['summary'][:200]}"
-        for i, d in enumerate(deals)
-    )
+    listing = "\n\n".join(format_deal(i, d) for i, d in enumerate(deals))
     return PROMPT.format(
         rules=config.read_doc("rules.md"),
         brands=config.read_doc("brands.md"),
@@ -212,11 +193,23 @@ def score(deals):
 
 def send_for_review(deal, token, chat_id):
     verify = deal["reason"].startswith("VERIFY:")
+
+    bits = [f"🌡 {deal.get('temperature') if deal.get('temperature') is not None else 'n/a'}"]
+    if deal.get("price") is not None:
+        line = f"💰 {deal['price']}€"
+        if deal.get("next_best_price"):
+            line += f" (was {deal['next_best_price']}€)"
+        bits.append(line)
+    if deal.get("merchant"):
+        bits.append(f"🏪 {html.escape(deal['merchant'])}")
+    if deal.get("voucher_code"):
+        bits.append(f"🎫 <code>{html.escape(deal['voucher_code'])}</code>")
+
     text = (
         f"{'⚠️ ' if verify else ''}<b>{html.escape(deal['title'])}</b>\n\n"
         f"<i>{html.escape(deal['reason'])}</i>\n\n"
-        f"🌡 {deal['temperature'] or 'n/a'}\n"
-        f"{html.escape(deal['link'])}"
+        + "\n".join(bits)
+        + f"\n{html.escape(deal['link'])}"
     )
     r = requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
