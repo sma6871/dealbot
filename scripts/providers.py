@@ -19,7 +19,8 @@ def call_gemini(prompt, model, api_key):
         },
         timeout=TIMEOUT,
     )
-    r.raise_for_status()
+    if not r.ok:
+        raise ValueError(f"gemini {r.status_code}: {r.text[:500]}")
     data = r.json()
     try:
         return data["candidates"][0]["content"]["parts"][0]["text"]
