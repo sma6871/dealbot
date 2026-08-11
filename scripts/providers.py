@@ -14,6 +14,7 @@ def call_gemini(prompt, model, api_key):
             "generationConfig": {
                 "temperature": 0.2,
                 "responseMimeType": "application/json",
+                "thinkingConfig": {"thinkingBudget": 0},
             },
         },
         timeout=TIMEOUT,
