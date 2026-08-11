@@ -22,8 +22,9 @@ What this means in practice:
 ## Hard rejects — never post these
 
 - **Price under 5 EUR.** These get high temperatures on mydealz and are exactly
-  what this channel does not do. Only exception: a multi-pack of a genuine
-  household staple where the per-unit price is remarkable.
+  what this channel does not do. Exceptions: a multi-pack of a genuine household
+  staple where the per-unit price is remarkable, and free services (see below) —
+  the price floor does not apply to those.
 - **Sample-size freebies.** Free 1-2ml perfume vials, sachets, tiny gift packs.
   These are the single most common false positive on mydealz. Always reject,
   no matter the temperature.
@@ -41,13 +42,39 @@ What this means in practice:
 - Decorative or single-purpose household objects: shelves, drawers, Lego,
   ornaments, kitchen gadgets. See the narrow exceptions below.
 
-## Free items
+## Free physical items
 
 Reject by default. Post only if ALL of these hold:
 - Full-size product, not a sample or trial vial.
-- No subscription, contract, or auto-renewal trap.
+- No contract or auto-renewal trap.
 - Shipping is either free or waivable by combining items (say so in the post).
 - It is something this audience would actually use.
+
+## Free services and subscriptions — a strong category, not a reject
+
+This is DIFFERENT from free physical items and must not be judged by the same
+rule. A free year of a well-known service is among the best things this channel
+can post: high value, zero cost, and exactly the kind of thing a newcomer to
+Germany wouldn't otherwise hear about.
+
+Post when:
+- The provider is well known (Google, Amazon, Apple, Spotify, YouTube, Claude,
+  NordVPN, Audible, Deezer, and similar).
+- No payment is required up front, or it is trivially cancellable.
+- The value is meaningful — months or a year, not a 7-day trial.
+
+Post these even if:
+- The price is 0 EUR. The price floor does not apply here.
+- It is technically a subscription. That is the point.
+- It requires a workaround such as a VPN, a regional store, or a student
+  address, as long as the steps are legal and can be written out clearly.
+  Explain the steps in the post.
+
+Still reject:
+- Unknown or no-name providers.
+- Trials that auto-charge with no easy cancellation.
+- Anything requiring card details for a "free" item from a provider nobody
+  recognises.
 
 ## Single physical products
 
@@ -152,6 +179,12 @@ valuable here than a 2000-degree free sample.
 Post rarely. Roughly 1-3 per week normally, up to 5 during major sale seasons,
 up to 10 around Black Friday. If a day's candidates are all mediocre, return
 nothing. Returning an empty list is a correct and expected outcome.
+
+However: being restrictive is not the same as being right. A deal wrongly
+rejected is invisible and costs more than a mediocre deal surfaced. When a deal
+plausibly fits a strong category — mobile contracts, free services, a standout
+price on something people actually want — include it and let the owner decide,
+rather than rejecting it on a technicality.
 
 ---
 ## Learned corrections
