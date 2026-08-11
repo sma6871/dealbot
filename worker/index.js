@@ -86,6 +86,7 @@ async function callGemini(env, prompt) {
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: { temperature: 0.4 },
+        "thinkingConfig": {"thinkingLevel": "low"},
       }),
     }
   );
