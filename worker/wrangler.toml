@@ -10,7 +10,7 @@ id = "b190a08241dc471ea80161ae4fe09a43"
 
 [vars]
 FEED_URLS = "https://www.mydealz.de/rss/hot,https://www.mydealz.de/rss,https://www.mydealz.de/rss/deals"
-GEMINI_MODEL = "gemini-flash-latest"
+GEMINI_MODEL = "gemini-3.6-flash"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 # Secrets — set these with `npx wrangler secret put NAME`, never put them here:
