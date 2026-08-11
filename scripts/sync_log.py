@@ -21,6 +21,7 @@ LOG = ROOT / "data" / "log.csv"
 FIELDS = [
     "timestamp", "decision", "title", "link", "temperature",
     "model_reason", "my_reason", "sent_text", "edit_rounds",
+    "deal_url", "shop",
 ]
 
 STALE_HOURS = 48

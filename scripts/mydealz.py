@@ -44,6 +44,7 @@ THREAD_FIELDS = """
     expirable
     commentCount
     shareCount
+    linkHost
     mainImage { path name }
     merchant { merchantName }
 """
@@ -139,6 +140,9 @@ def _normalize_graphql(t):
         "temperature": int(t["temperature"]) if t.get("temperature") is not None else None,
         "type": t.get("type"),
         "merchant": (t.get("merchant") or {}).get("merchantName"),
+        # The real outgoing URL is never exposed by the API. linkHost is the
+        # merchant domain and is populated for every deal.
+        "link_host": t.get("linkHost"),
         "voucher_code": t.get("voucherCode"),
         "is_expired": bool(t.get("isExpired")),
         "comment_count": t.get("commentCount"),
@@ -210,6 +214,7 @@ def _normalize_rss(entry):
         "temperature": int(temp.group(1).replace(".", "")) if temp else None,
         "type": None,
         "merchant": None,
+        "link_host": None,
         "voucher_code": None,
         "is_expired": False,
         "comment_count": None,

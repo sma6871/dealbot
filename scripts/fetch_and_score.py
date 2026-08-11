@@ -112,6 +112,8 @@ def format_deal(i, deal):
                 pass
     if deal.get("merchant"):
         facts.append(f"merchant {deal['merchant']}")
+    elif deal.get("link_host"):
+        facts.append(f"shop {deal['link_host']}")
     if deal.get("type"):
         facts.append(f"type {deal['type']}")
     if deal.get("voucher_code"):
@@ -200,8 +202,9 @@ def send_for_review(deal, token, chat_id):
         if deal.get("next_best_price"):
             line += f" (was {deal['next_best_price']}€)"
         bits.append(line)
-    if deal.get("merchant"):
-        bits.append(f"🏪 {html.escape(deal['merchant'])}")
+    shop = deal.get("merchant") or deal.get("link_host")
+    if shop:
+        bits.append(f"🏪 {html.escape(shop)}")
     if deal.get("voucher_code"):
         bits.append(f"🎫 <code>{html.escape(deal['voucher_code'])}</code>")
 
@@ -219,10 +222,16 @@ def send_for_review(deal, token, chat_id):
             "parse_mode": "HTML",
             "link_preview_options": {"is_disabled": True},
             "reply_markup": {
-                "inline_keyboard": [[
-                    {"text": "✅ Post", "callback_data": "post"},
-                    {"text": "❌ Skip", "callback_data": "skip"},
-                ]]
+                "inline_keyboard": [
+                    [
+                        {"text": "🔥 Post", "callback_data": "hot"},
+                        {"text": "👍 Good but no", "callback_data": "good"},
+                    ],
+                    [
+                        {"text": "😐 Meh", "callback_data": "meh"},
+                        {"text": "❌ Never", "callback_data": "never"},
+                    ],
+                ]
             },
         },
         timeout=30,
