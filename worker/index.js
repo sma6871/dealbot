@@ -8,6 +8,12 @@
  *   POST /webhook   Telegram updates (verified via secret header)
  *   GET  /health    status JSON, polled by GitHub Actions
  *
+ * Commands:
+ *   /draft <text>   draft a post from free text (non-mydealz deals)
+ *   /missed <url>   log a deal the filter should have caught
+ *   /batch [n]      raw deals for rule training, never posts
+ *   /status         worker health
+ *
  * KV keys:
  *   pending:<message_id>   a deal awaiting my approve/skip
  *   draft:<message_id>     { deal, text, edits[] } awaiting send/edit/discard
@@ -35,6 +41,13 @@ async function tg(env, method, payload) {
   return r;
 }
 
+async function notifyOwner(env, text) {
+  await tg(env, "sendMessage", {
+    chat_id: env.TELEGRAM_ADMIN_CHAT_ID,
+    text: text.slice(0, 3500),
+  });
+}
+
 async function kvJson(env, key, fallback) {
   const v = await env.DEALBOT.get(key);
   if (!v) return fallback;
@@ -52,11 +65,19 @@ async function logDecision(env, row) {
   await env.DEALBOT.put("decisions", JSON.stringify(decisions.slice(-1000)));
 }
 
+// Four-way feedback. "good" and "meh" distinguish "fair pick, wrong moment"
+// from "borderline" — binary skip collapsed those and lost the signal.
 const REVIEW_KB = {
-  inline_keyboard: [[
-    { text: "✅ Post", callback_data: "post" },
-    { text: "❌ Skip", callback_data: "skip" },
-  ]],
+  inline_keyboard: [
+    [
+      { text: "🔥 Post", callback_data: "hot" },
+      { text: "👍 Good but no", callback_data: "good" },
+    ],
+    [
+      { text: "😐 Meh", callback_data: "meh" },
+      { text: "❌ Never", callback_data: "never" },
+    ],
+  ],
 };
 
 const DRAFT_KB = {
@@ -85,10 +106,7 @@ async function callGemini(env, prompt) {
       headers: { "x-goog-api-key": env.GEMINI_API_KEY, "Content-Type": "application/json" },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.4,
-          thinkingConfig: { thinkingLevel: "low" },
-        },
+        generationConfig: { temperature: 0.4 },
       }),
     }
   );
@@ -148,9 +166,12 @@ ${env.POST_TEMPLATE}
 
 <deal>
 Title: ${deal.title}
-Link: ${deal.link}
+Shop: ${deal.merchant || deal.link_host || "unknown"}
+Price: ${deal.price ?? "n/a"}
+Was: ${deal.next_best_price ?? "n/a"}
 Temperature: ${deal.temperature ?? "n/a"}
-Description: ${deal.summary ?? ""}
+Voucher code: ${deal.voucher_code || "none"}
+Description: ${deal.description ?? deal.summary ?? ""}
 Why it was selected: ${deal.reason ?? ""}
 </deal>
 ${editBlock}
@@ -159,11 +180,14 @@ Rules:
 - Persian numerals in the Persian block. Keep links in Latin script.
 - If a detail is not in the deal data, leave that line out. Never invent prices,
   dates, or discount percentages.
+- NEVER include a mydealz.de link or mention mydealz. The channel does not
+  disclose its source. Name the shop instead (e.g. "at amazon.de").
+- Do not put the deal URL in the text at all. It is attached as a button.
 - Output ONLY the post text. No preamble, no markdown fences.
 - Use Telegram HTML: <b>, <i>, <a href="">. No other tags.`;
 }
 
-async function sendDraft(env, chatId, deal, text, edits) {
+async function sendDraft(env, chatId, deal, text, edits, dealUrl) {
   if (text.length > TG_LIMIT) {
     await tg(env, "sendMessage", {
       chat_id: chatId,
@@ -171,9 +195,15 @@ async function sendDraft(env, chatId, deal, text, edits) {
     });
     return;
   }
+
+  const shop = deal.merchant || deal.link_host || null;
+  const status = dealUrl
+    ? `🛒 Link set: ${dealUrl}`
+    : `⚠️ No deal link yet.${shop ? ` Shop is ${shop}.` : ""} Reply "link: <url>" to add a button.`;
+
   const r = await tg(env, "sendMessage", {
     chat_id: chatId,
-    text,
+    text: `${text}\n\n— ${status}`,
     parse_mode: "HTML",
     link_preview_options: { is_disabled: true },
     reply_markup: DRAFT_KB,
@@ -183,13 +213,32 @@ async function sendDraft(env, chatId, deal, text, edits) {
   if (mid) {
     await env.DEALBOT.put(
       `draft:${mid}`,
-      JSON.stringify({ deal, text, edits }),
+      JSON.stringify({ deal, text, edits, dealUrl: dealUrl || null }),
       { expirationTtl: 60 * 60 * 24 * 7 }
     );
+  } else {
+    await notifyOwner(env, "Could not send the draft. Check the worker logs.");
   }
 }
 
 // ---------- handlers ----------
+
+async function generateAndSendDraft(env, chatId, deal, edits, dealUrl) {
+  await tg(env, "sendMessage", { chat_id: chatId, text: "Writing a draft…" });
+  try {
+    const text = await generate(env, draftPrompt(env, deal, edits));
+    await sendDraft(env, chatId, deal, text, edits, dealUrl);
+  } catch (e) {
+    await notifyOwner(env, `❌ Draft failed: ${e.message}`);
+  }
+}
+
+const REVIEW_ACTIONS = {
+  hot: { decision: "hot", note: "🔥 Posting", askReason: false },
+  good: { decision: "good_but_no", note: "👍 Good pick, not now", askReason: true },
+  meh: { decision: "meh", note: "😐 Borderline", askReason: true },
+  never: { decision: "never", note: "❌ Should never have surfaced", askReason: true },
+};
 
 async function handleCallback(env, cb) {
   const chatId = cb.message.chat.id;
@@ -198,36 +247,45 @@ async function handleCallback(env, cb) {
 
   await tg(env, "answerCallbackQuery", { callback_query_id: cb.id });
 
-  // --- review stage: post or skip a candidate ---
-  if (action === "post" || action === "skip") {
+  // --- review stage: four-way feedback ---
+  if (REVIEW_ACTIONS[action]) {
+    const { decision, note, askReason } = REVIEW_ACTIONS[action];
     const deal = await kvJson(env, `pending:${mid}`, null);
+
     await tg(env, "editMessageReplyMarkup", {
       chat_id: chatId, message_id: mid, reply_markup: { inline_keyboard: [] },
     });
-    if (!deal) return;
+
+    if (!deal) {
+      // Never fail silently — the owner sees the buttons vanish otherwise.
+      await notifyOwner(env, "That deal expired or wasn't found in storage, so nothing was logged.");
+      return;
+    }
 
     await logDecision(env, {
-      decision: action,
+      decision,
       title: deal.title,
       link: deal.link,
       temperature: deal.temperature ?? "",
+      shop: deal.merchant || deal.link_host || "",
       model_reason: deal.reason ?? "",
     });
 
-    if (action === "post") {
-      await tg(env, "sendMessage", { chat_id: chatId, text: "Writing a draft…" });
-      try {
-        const text = await generate(env, draftPrompt(env, deal, []));
-        await sendDraft(env, chatId, deal, text, []);
-      } catch (e) {
-        await tg(env, "sendMessage", { chat_id: chatId, text: `Draft failed: ${e.message}` });
-      }
+    await tg(env, "editMessageText", {
+      chat_id: chatId,
+      message_id: mid,
+      text: `${cb.message.text || ""}\n\n— ${note}`,
+      link_preview_options: { is_disabled: true },
+    });
+
+    if (action === "hot") {
+      await generateAndSendDraft(env, chatId, deal, [], null);
       await env.DEALBOT.delete(`pending:${mid}`);
-    } else {
+    } else if (askReason) {
       await env.DEALBOT.put(`awaiting:${chatId}`, String(mid), { expirationTtl: 3600 });
       await tg(env, "sendMessage", {
         chat_id: chatId,
-        text: "Skipped. Reply here with a reason if you want (optional).",
+        text: "Reply with a reason if you have one (optional, but valuable when you disagree with the model).",
       });
     }
     return;
@@ -245,7 +303,7 @@ async function handleCallback(env, cb) {
       title: deal.title,
       link: deal.link,
       temperature: deal.temperature ?? "",
-      model_reason: "",
+      shop: deal.merchant || deal.link_host || "",
     });
     if (action === "batch_down") {
       await env.DEALBOT.put(`awaiting:${chatId}`, String(mid), { expirationTtl: 3600 });
@@ -255,15 +313,43 @@ async function handleCallback(env, cb) {
 
   // --- draft stage: send, edit, discard ---
   const draft = await kvJson(env, `draft:${mid}`, null);
-  if (!draft) return;
+  if (!draft) {
+    await notifyOwner(env, "That draft expired or wasn't found. Nothing was sent.");
+    return;
+  }
 
   if (action === "send") {
-    await tg(env, "sendMessage", {
+    const markup = draft.dealUrl
+      ? { inline_keyboard: [[{ text: "🛒 Zum Deal", url: draft.dealUrl }]] }
+      : undefined;
+
+    const payload = {
       chat_id: env.TELEGRAM_CHANNEL_ID,
       text: draft.text,
       parse_mode: "HTML",
       link_preview_options: { is_disabled: true },
-    });
+    };
+    if (markup) payload.reply_markup = markup;
+
+    let r = await tg(env, "sendMessage", payload);
+
+    // A stray < or & makes Telegram reject the whole message. Retry as plain text.
+    if (!r.ok) {
+      const firstErr = await r.text();
+      console.error("HTML post failed, retrying plain:", firstErr);
+      const plain = { ...payload };
+      delete plain.parse_mode;
+      r = await tg(env, "sendMessage", plain);
+      if (!r.ok) {
+        // Do NOT delete the draft — it stays recoverable.
+        await notifyOwner(
+          env,
+          `❌ Post failed, draft kept. Tap Send again after fixing.\n\n${(await r.text()).slice(0, 600)}`
+        );
+        return;
+      }
+    }
+
     await tg(env, "editMessageReplyMarkup", {
       chat_id: chatId, message_id: mid, reply_markup: { inline_keyboard: [] },
     });
@@ -272,6 +358,8 @@ async function handleCallback(env, cb) {
       decision: "sent",
       title: draft.deal.title,
       link: draft.deal.link,
+      shop: draft.deal.merchant || draft.deal.link_host || "",
+      deal_url: draft.dealUrl || "",
       sent_text: draft.text,
       edit_rounds: draft.edits.length,
     });
@@ -299,9 +387,87 @@ async function handleCallback(env, cb) {
     await env.DEALBOT.put(`awaiting:${chatId}`, `draft:${mid}`, { expirationTtl: 3600 });
     await tg(env, "sendMessage", {
       chat_id: chatId,
-      text: 'What should change? Reply in plain language, e.g. "shorter" or "add the TCO math".',
+      text:
+        'What should change? Reply in plain language, e.g. "shorter" or "add the TCO math".\n\n' +
+        'To attach the deal link as a button, reply "link: https://..."',
     });
   }
+}
+
+const URL_RE = /https?:\/\/[^\s<>"']+/;
+
+function parseLinkLine(text) {
+  // "link: https://..." or "url: https://..." anywhere in the message
+  const m = text.match(/^\s*(?:link|url)\s*:\s*(\S+)/im);
+  if (m && URL_RE.test(m[1])) return m[1];
+  return null;
+}
+
+async function handleDraftCommand(env, chatId, raw) {
+  const body = raw.replace(/^\/draft(?:@\S+)?\s*/i, "").trim();
+  if (!body) {
+    await tg(env, "sendMessage", {
+      chat_id: chatId,
+      text:
+        "Describe the deal and I'll write a post.\n\n" +
+        "Example:\n/draft Amazon Prime 3 months for 4.99 instead of 26.97, " +
+        "claim via the Discover Prime popup, ends June 26\nlink: https://www.amazon.de",
+    });
+    return;
+  }
+
+  const dealUrl = parseLinkLine(body);
+  // Strip the link line so it doesn't end up in the prose.
+  const description = body.replace(/^\s*(?:link|url)\s*:\s*\S+\s*$/im, "").trim();
+
+  const deal = {
+    title: description.split("\n")[0].slice(0, 200),
+    description,
+    link: "",
+    merchant: null,
+    link_host: dealUrl ? (() => { try { return new URL(dealUrl).hostname; } catch { return null; } })() : null,
+    temperature: null,
+    price: null,
+    next_best_price: null,
+    voucher_code: null,
+    reason: "manual /draft",
+  };
+
+  await generateAndSendDraft(env, chatId, deal, [], dealUrl);
+}
+
+async function handleMissedCommand(env, chatId, raw) {
+  const body = raw.replace(/^\/missed(?:@\S+)?\s*/i, "").trim();
+  const m = body.match(URL_RE);
+
+  if (!body) {
+    await tg(env, "sendMessage", {
+      chat_id: chatId,
+      text:
+        "Log a deal the filter should have caught.\n\n" +
+        "/missed <url> <why it should have been picked>\n\n" +
+        "These are the most valuable entries in the log — they're the only way " +
+        "to see what the rules are wrongly rejecting.",
+    });
+    return;
+  }
+
+  const url = m ? m[0] : "";
+  const reason = body.replace(URL_RE, "").replace(/^[\s—–-]+/, "").trim();
+
+  await logDecision(env, {
+    decision: "missed",
+    title: "",
+    link: url,
+    my_reason: reason,
+  });
+
+  await tg(env, "sendMessage", {
+    chat_id: chatId,
+    text: reason
+      ? "Logged as missed 📌 — this one will shape the next rules update."
+      : "Logged as missed 📌. A reason would make it much more useful — send /missed again with one if you can.",
+  });
 }
 
 async function handleMessage(env, msg) {
@@ -310,25 +476,52 @@ async function handleMessage(env, msg) {
   const text = (msg.text || "").trim();
   if (!text) return;
 
+  if (/^\/draft\b/i.test(text)) {
+    await handleDraftCommand(env, chatId, text);
+    return;
+  }
+
+  if (/^\/missed\b/i.test(text)) {
+    await handleMissedCommand(env, chatId, text);
+    return;
+  }
+
   // /batch [n] — raw deals for rule training, no scoring, no posting
-  if (text.startsWith("/batch")) {
+  if (/^\/batch\b/i.test(text)) {
     const n = Math.min(parseInt(text.split(/\s+/)[1], 10) || 20, 50);
     await tg(env, "sendMessage", { chat_id: chatId, text: `Fetching ${n} fresh deals…` });
     try {
       const sent = await sendBatch(env, chatId, n);
       await tg(env, "sendMessage", { chat_id: chatId, text: `Sent ${sent}.` });
     } catch (e) {
-      await tg(env, "sendMessage", { chat_id: chatId, text: `Batch failed: ${e.message}` });
+      await notifyOwner(env, `❌ Batch failed: ${e.message}`);
     }
     return;
   }
 
-  if (text === "/status") {
+  if (/^\/status\b/i.test(text)) {
     const stats = await kvJson(env, "stats", {});
     const decisions = await kvJson(env, "decisions", []);
     await tg(env, "sendMessage", {
       chat_id: chatId,
-      text: `Updates handled: ${stats.updateCount ?? 0}\nUnsynced decisions: ${decisions.length}\nLast error: ${stats.lastError ?? "none"}`,
+      text:
+        `Updates handled: ${stats.updateCount ?? 0}\n` +
+        `Unsynced decisions: ${decisions.length}\n` +
+        `Last update: ${stats.lastUpdate ?? "never"}\n` +
+        `Last error: ${stats.lastError ?? "none"}`,
+    });
+    return;
+  }
+
+  if (/^\/help\b/i.test(text) || /^\/start\b/i.test(text)) {
+    await tg(env, "sendMessage", {
+      chat_id: chatId,
+      text:
+        "/draft <description> — write a post from free text\n" +
+        "  add a line \"link: https://...\" for a Zum Deal button\n" +
+        "/missed <url> <why> — log a deal the filter wrongly rejected\n" +
+        "/batch [n] — raw deals with 👍/👎 for rule training (never posts)\n" +
+        "/status — worker health",
     });
     return;
   }
@@ -336,30 +529,46 @@ async function handleMessage(env, msg) {
   // Anything else: is it an answer to something I asked?
   const awaiting = await env.DEALBOT.get(`awaiting:${chatId}`);
   if (!awaiting) return;
-  await env.DEALBOT.delete(`awaiting:${chatId}`);
 
-  // Edit instruction for a draft
+  // Edit instruction, or a link, for a draft
   if (awaiting.startsWith("draft:")) {
     const draft = await kvJson(env, awaiting, null);
-    if (!draft) return;
+    if (!draft) {
+      await env.DEALBOT.delete(`awaiting:${chatId}`);
+      await notifyOwner(env, "That draft expired. Nothing was changed.");
+      return;
+    }
+
+    const link = parseLinkLine(text);
+    if (link) {
+      // Attaching a link doesn't need a regeneration — the URL is a button.
+      await env.DEALBOT.delete(`awaiting:${chatId}`);
+      await env.DEALBOT.delete(awaiting);
+      await sendDraft(env, chatId, draft.deal, draft.text, draft.edits, link);
+      return;
+    }
+
+    await env.DEALBOT.delete(`awaiting:${chatId}`);
     const edits = [...draft.edits, text];
     await tg(env, "sendMessage", { chat_id: chatId, text: "Revising…" });
     try {
       const newText = await generate(env, draftPrompt(env, draft.deal, edits));
-      await sendDraft(env, chatId, draft.deal, newText, edits);
+      await sendDraft(env, chatId, draft.deal, newText, edits, draft.dealUrl);
       await env.DEALBOT.delete(awaiting);
     } catch (e) {
-      await tg(env, "sendMessage", { chat_id: chatId, text: `Revision failed: ${e.message}` });
+      await notifyOwner(env, `❌ Revision failed, draft kept: ${e.message}`);
     }
     return;
   }
 
-  // Reason for a skip or a 👎
+  // Reason for a review decision or a batch 👎
+  await env.DEALBOT.delete(`awaiting:${chatId}`);
   const deal = await kvJson(env, `pending:${awaiting}`, null);
   await logDecision(env, {
     decision: "reason",
     title: deal?.title ?? "",
     link: deal?.link ?? "",
+    shop: deal ? (deal.merchant || deal.link_host || "") : "",
     my_reason: text,
   });
   await tg(env, "sendMessage", { chat_id: chatId, text: "Noted 👍" });
@@ -405,8 +614,10 @@ async function sendBatch(env, chatId, n) {
         id: guid,
         title,
         link,
-        summary: pick("description").slice(0, 300),
+        description: pick("description").slice(0, 300),
         temperature: tempMatch ? tempMatch[1].replace(/\./g, "") : null,
+        merchant: null,
+        link_host: null,
       });
       if (deals.length >= n) break;
     }
