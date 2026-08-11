@@ -24,7 +24,7 @@ urls = [
 ]
 
 [gemini]
-model = "gemini-flash-latest"
+model = "gemini-3.6-flash"
 api_key_env = "GEMINI_API_KEY"
 
 [groq]
