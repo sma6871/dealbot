@@ -197,17 +197,37 @@ async function sendDraft(env, chatId, deal, text, edits, dealUrl) {
   }
 
   const shop = deal.merchant || deal.link_host || null;
+  // No angle brackets here — Telegram's HTML parser rejects unknown tags.
   const status = dealUrl
-    ? `🛒 Link set: ${dealUrl}`
-    : `⚠️ No deal link yet.${shop ? ` Shop is ${shop}.` : ""} Reply "link: <url>" to add a button.`;
+    ? `🛒 Link set: ${esc(dealUrl)}`
+    : `⚠️ No deal link yet.${shop ? ` Shop is ${esc(shop)}.` : ""} Reply with "link: https://..." to add a button.`;
 
-  const r = await tg(env, "sendMessage", {
+  const payload = {
     chat_id: chatId,
     text: `${text}\n\n— ${status}`,
     parse_mode: "HTML",
     link_preview_options: { is_disabled: true },
     reply_markup: DRAFT_KB,
-  });
+  };
+
+  let r = await tg(env, "sendMessage", payload);
+
+  // LLM-generated text can contain stray < or &. Retry as plain text.
+  if (!r.ok) {
+    const firstErr = await r.text();
+    console.error("HTML draft failed, retrying plain:", firstErr);
+    const plain = { ...payload };
+    delete plain.parse_mode;
+    r = await tg(env, "sendMessage", plain);
+    if (!r.ok) {
+      await notifyOwner(
+        env,
+        `❌ Could not send the draft:\n\n${(await r.text()).slice(0, 600)}`
+      );
+      return;
+    }
+  }
+
   const body = await r.json().catch(() => null);
   const mid = body?.result?.message_id;
   if (mid) {
@@ -217,7 +237,7 @@ async function sendDraft(env, chatId, deal, text, edits, dealUrl) {
       { expirationTtl: 60 * 60 * 24 * 7 }
     );
   } else {
-    await notifyOwner(env, "Could not send the draft. Check the worker logs.");
+    await notifyOwner(env, "Draft sent but couldn't be saved — the buttons won't work. Try again.");
   }
 }
 
