@@ -106,7 +106,11 @@ async function callGemini(env, prompt) {
       headers: { "x-goog-api-key": env.GEMINI_API_KEY, "Content-Type": "application/json" },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.4 },
+        // MUST be nested inside generationConfig or it's silently ignored.
+        generationConfig: {
+          temperature: 0.4,
+          thinkingConfig: { thinkingLevel: "minimal" },
+        },
       }),
     }
   );
