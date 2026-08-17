@@ -134,10 +134,12 @@ Cloudflare secrets. The handler's bugs (below) hid this by reporting success.
 decisions. The manual "read the log, rewrite the rules" step has happened **zero
 times**. That step is the whole point; everything else is ready for it.
 
-**Cost:** ~€2.40/month on Gemini 3.6 Flash, now reduced. One LLM call per fetch
-run, plus one per draft and per edit round. €5/month spend cap set.
-`thinkingLevel: "low"` cut output tokens from ~4,000 to ~2,000 per scoring call.
-Current per-call usage: ~13k input, ~2k output.
+**Cost:** ~€2.40/month on Gemini 3.6 Flash. One LLM call per fetch run, plus one
+per draft and per edit round. €5/month spend cap set. Scoring uses
+`thinkingLevel: "low"` (~13k in / ~2k out per call). Drafting uses `"minimal"`.
+Each edit round regenerates the full bilingual post, so edits are the most
+expensive interaction — a day with 2-3 edits was visibly the cost peak before
+the worker's thinking level was fixed.
 
 ---
 
@@ -261,7 +263,26 @@ Each of these cost real time. Don't rediscover them.
 - **KV is eventually consistent.** An occasional duplicate deal is not a bug.
 - **`git add data/log.csv` fails when the file doesn't exist**, which is the
   normal case before the first sync. `sync.yml` guards for this.
+- **`thinkingConfig` has been silently dropped from the worker twice.** It must
+  be nested INSIDE `generationConfig`, not a sibling of it. As a sibling it is
+  ignored with no error, and drafts silently run at default (high) reasoning —
+  which showed up as a 3-4x cost spike on a day with a few draft edits. There are
+  TWO independent places to set it: `scripts/providers.py` (scoring) and
+  `worker/index.js` (drafting). Fixing one does not fix the other. Verify with:
+  `grep -A4 "contents: \[{ parts" worker/index.js`
 
+- **Every bot-authored message uses `parse_mode: "HTML"`**, so any literal `<` in
+  text the worker writes itself will break the send with a 400. This shipped as a
+  bug: the draft status line contained the literal string `link: <url>`, which
+  Telegram parsed as an unknown HTML tag and rejected — so every first draft
+  failed. Don't put angle brackets in instructional text, and run interpolated
+  values through `esc()`. Every `sendMessage` that carries generated text should
+  also retry without `parse_mode` and report the real Telegram error rather than
+  "check the logs".
+
+- **Draft calls use `thinkingLevel: "minimal"`, scoring uses `"low"`.**
+  Deliberate: drafting is template-filling with the facts already supplied,
+  scoring is judgment against a rulebook. Don't unify them.
 ---
 
 ## Conventions
