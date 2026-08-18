@@ -41,6 +41,25 @@ async function tg(env, method, payload) {
   return r;
 }
 
+// Telegram caps photo captions at 1024 chars, but a LINK PREVIEW image has no
+// caption limit. So we embed the image as an invisible anchor and let Telegram
+// render it above the text. Full-length bilingual posts keep working.
+function withPreview(deal, text) {
+  const img = deal?.image_url;
+  if (!img) {
+    return { text, link_preview_options: { is_disabled: true } };
+  }
+  return {
+    // Zero-width space as the anchor body: invisible, but Telegram sees the URL.
+    text: `<a href="${esc(img)}">\u200b</a>${text}`,
+    link_preview_options: {
+      url: img,
+      prefer_large_media: true,
+      show_above_text: true,
+    },
+  };
+}
+
 async function notifyOwner(env, text) {
   await tg(env, "sendMessage", {
     chat_id: env.TELEGRAM_ADMIN_CHAT_ID,
@@ -206,11 +225,12 @@ async function sendDraft(env, chatId, deal, text, edits, dealUrl) {
     ? `🛒 Link set: ${esc(dealUrl)}`
     : `⚠️ No deal link yet.${shop ? ` Shop is ${esc(shop)}.` : ""} Reply with "link: https://..." to add a button.`;
 
+  const preview = withPreview(deal, `${text}\n\n— ${status}`);
   const payload = {
     chat_id: chatId,
-    text: `${text}\n\n— ${status}`,
+    text: preview.text,
     parse_mode: "HTML",
-    link_preview_options: { is_disabled: true },
+    link_preview_options: preview.link_preview_options,
     reply_markup: DRAFT_KB,
   };
 
@@ -347,11 +367,12 @@ async function handleCallback(env, cb) {
       ? { inline_keyboard: [[{ text: "🛒 Get the deal · دریافت آفر", url: draft.dealUrl }]] }
       : undefined;
 
+    const preview = withPreview(draft.deal, draft.text);
     const payload = {
       chat_id: env.TELEGRAM_CHANNEL_ID,
-      text: draft.text,
+      text: preview.text,
       parse_mode: "HTML",
-      link_preview_options: { is_disabled: true },
+      link_preview_options: preview.link_preview_options,
     };
     if (markup) payload.reply_markup = markup;
 
