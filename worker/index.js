@@ -344,7 +344,7 @@ async function handleCallback(env, cb) {
 
   if (action === "send") {
     const markup = draft.dealUrl
-      ? { inline_keyboard: [[{ text: "🛒 Zum Deal", url: draft.dealUrl }]] }
+      ? { inline_keyboard: [[{ text: "🛒 Get the deal · دریافت آفر", url: draft.dealUrl }]] }
       : undefined;
 
     const payload = {
