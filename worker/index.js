@@ -37,7 +37,7 @@ async function tg(env, method, payload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!r.ok) console.error(`${method} failed:`, await r.text());
+  if (!r.ok) console.error(`${method} failed:`, await r.clone().text());
   return r;
 }
 
