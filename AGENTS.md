@@ -130,9 +130,9 @@ responding instantly, draft generation, edit loop.
 **`✅ Send` root cause found:** `TELEGRAM_CHANNEL_ID` was never set in the
 Cloudflare secrets. The handler's bugs (below) hid this by reporting success.
 
-**Feedback loop status:** instrumented but never run. `log.csv` is accumulating
-decisions. The manual "read the log, rewrite the rules" step has happened **zero
-times**. That step is the whole point; everything else is ready for it.
+**Feedback loop status:** first review completed on 2026-11-12 across 145 rows
+in `data/log.csv` (70 candidates, 7 sent, 3 missed). `rules.md` and `brands.md`
+were updated from those actual decisions.
 
 **Cost:** ~€2.40/month on Gemini 3.6 Flash. One LLM call per fetch run, plus one
 per draft and per edit round. €5/month spend cap set. Scoring uses
@@ -147,9 +147,10 @@ the worker's thinking level was fixed.
 
 Ordered by value, highest first.
 
-1. **Run the feedback loop once.** Send `log.csv` to Claude, get rewritten
-   `rules.md` and `brands.md`. This has never been done and is the reason the
-   system exists.
+1. **Monitor the updated `rules.md` and `brands.md`.** First feedback loop ran on
+   2026-11-12 from `data/log.csv`; watch upcoming candidate runs to verify the
+   noisy `VERIFY:` clothing/CB picks, games, and SIM-only flood drop while
+   storewide retail/payment/AI promos surface.
 
 2. **`✅ Send` handler bugs** in `worker/index.js`. The missing
    `TELEGRAM_CHANNEL_ID` is fixed, but the handler still:

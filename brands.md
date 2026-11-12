@@ -1,37 +1,37 @@
 # Brand and retailer lists
 
-Referenced by rules.md. These are rough starting lists, not final. Add and
-remove freely — the point is that they get sharper from actual decisions, not
-that they're right on day one.
+Referenced by rules.md. Updated from actual decisions in `data/log.csv` — add
+and remove freely as new patterns show up.
 
 Empty sections are fine. An empty section means "no opinion yet, use judgment".
 
 ---
 
-## Clothing and shoes — brands worth a post
+## Clothing and shoes — worth a post (broad storewide promos only)
 
-Only halo/top-line products from these count, not generic branded items.
+Individual items/sneakers are rejected in `rules.md`. Only broad storewide
+promotions apply here.
 
-- Nike (Jordan top models)
--
--
+- adidas
 -
 
 ## Clothing and shoes — explicitly not interesting
 
 Even at a big discount.
 
--
+- Patagonia (unfamiliar to audience, rejected twice)
+- Birkenstock (rejected twice)
 -
 
 ## Retailers I trust
 
-- MediaMarkt
+- MediaMarkt (including Media Markt Tarifwelt)
 - Saturn
 - Amazon.de
-- Zalando
--
--
+- Zalando (broad storewide/gift-card promos only, not individual items)
+- adidas
+- Revolut (partner perks / mobile eSIM)
+- Wolt
 
 ## Retailers — blocked completely
 
@@ -43,40 +43,48 @@ Even at a big discount.
 - LightInTheBox
 - Joom
 - DHgate
--
+- Veepee (members-only flash-sale site, rejected)
+- Grey-market / region-trick key sellers for tricky setups (e.g. eldorado.gg, keyubu.com)
 
 ## Mobile networks
 
-Good: O2, Telekom
-Blocked: Vodafone (unless the bundled device alone justifies it)
+Good: O2 (Telefónica), Telekom
+Blocked: Vodafone (unless a flagship bundled device TCO is clearly below Idealo/retail)
 
 Resellers with good approval rates:
-- MediaMarkt
--
+- MediaMarkt (Media Markt Tarifwelt)
 -
 
-## Apps and services — genuine, postable
+## Apps, AI, and services — genuine, postable
 
-- YouTube Premium
-- NordVPN
+- ChatGPT / OpenAI
+- Google Gemini / Google AI Pro
 - Claude
-- Spotify
--
--
+- NextDNS
+- YouTube Premium (direct/clean offers, not Turkey Apple ID tricks)
+- NordVPN
+- Spotify (direct/clean offers, not grey-market key tricks)
+- PayPal (payment bonuses / cashback)
+- Revolut (partner perks / subscription bundles)
+- Wolt (delivery/grocery vouchers)
 
 ## Electronics brands worth a post
 
 For phones, TVs, audio.
 
-- Apple
-- Samsung
+- Apple (iPhone — check Idealo before surfacing Watch/accessories)
+- Samsung (Galaxy S/Ultra phones; QLED/OLED TVs — skip Crystal UHD)
 - Google (Pixel)
--
--
+- Xiaomi (flagships like 17T / Pro only)
+
+## Electronics brands — explicitly not interesting
+
+- Motorola (rejected: not popular)
 
 ## Perfume brands worth a post
 
-Full-size only, never samples.
+Full-size recognizable mainstream designer/luxury brands only, never samples.
+Skip obscure niche houses (e.g. Mancera was rejected).
 
 -
 -
@@ -84,5 +92,5 @@ Full-size only, never samples.
 ## Notes
 
 Anything not on a list is not automatically rejected — the rules in rules.md
-still apply. These lists exist to resolve the cases where "is this a top brand?"
-would otherwise be a guess.
+still apply. These lists exist to resolve the cases where "is this a brand or
+shop we actually endorse?" would otherwise be a guess.
