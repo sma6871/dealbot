@@ -119,6 +119,18 @@ This was learned the hard way — see "Gotchas".
   domain, populated for every deal) to name the shop. The real outgoing URL is
   NOT obtainable — see Gotchas.
 
+- **Two-stage scoring with `gemini-decision-1`.** Evaluates deals against
+  `rules.md` via the Gemini Decisions API (`v1beta/decisions`) at $0.10/1M input
+  and $0 output tokens. If 0 deals pass threshold (0.5), the run exits without
+  calling Gemini Flash. Only survivors (1–4 deals) are passed to Flash for TCO
+  math and the Telegram reason. Drops passive background run costs by ~88% while
+  preserving human-readable reasons in Telegram.
+
+- **Zero-risk pre-filter in Python.** Hard rejects (Shein/AliExpress/Temu, car
+  tires, vapes, gambling, console games) are dropped in Python before any API
+  call. Never filters on price so €0 deals, freebies, and rare cheap
+  subscription gems (e.g. €2.54 Gemini Pro) are completely protected.
+
 ---
 
 ## Current state
@@ -134,12 +146,10 @@ Cloudflare secrets. The handler's bugs (below) hid this by reporting success.
 in `data/log.csv` (70 candidates, 7 sent, 3 missed). `rules.md` and `brands.md`
 were updated from those actual decisions.
 
-**Cost:** ~€2.40/month on Gemini 3.6 Flash. One LLM call per fetch run, plus one
-per draft and per edit round. €5/month spend cap set. Scoring uses
-`thinkingLevel: "low"` (~13k in / ~2k out per call). Drafting uses `"minimal"`.
-Each edit round regenerates the full bilingual post, so edits are the most
-expensive interaction — a day with 2-3 edits was visibly the cost peak before
-the worker's thinking level was fixed.
+**Cost:** Reduced via the two-stage pipeline. Stage 1 (`gemini-decision-1` at
+$0.10/M input, $0 output) drops non-qualifying runs for ~$0.001. Stage 2 (Flash)
+only runs on survivor deals (~2k tokens instead of 18k) to compute TCO math and
+Telegram reasons. €5/month spend cap remains safe.
 
 ---
 
@@ -284,6 +294,11 @@ Each of these cost real time. Don't rediscover them.
 - **Draft calls use `thinkingLevel: "minimal"`, scoring uses `"low"`.**
   Deliberate: drafting is template-filling with the facts already supplied,
   scoring is judgment against a rulebook. Don't unify them.
+
+- **Gemini Decisions API emits zero output tokens.** `gemini-decision-1` on
+  `v1beta/decisions` returns an `answers` object where `noul` is the calibrated
+  Yes probability (0.0 to 1.0). Pricing is $0.10/1M input and $0 output tokens.
+  If it errors, `score_two_stage` falls back to direct Flash scoring.
 ---
 
 ## Conventions

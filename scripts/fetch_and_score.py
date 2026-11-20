@@ -16,7 +16,7 @@ import requests
 import config
 import kv
 import mydealz
-from providers import REGISTRY
+from providers import REGISTRY, call_gemini_decision
 
 PENDING_TTL = 60 * 60 * 24 * 3  # 3 days, matches the Worker
 
@@ -49,6 +49,42 @@ def fetch_deals():
         max_items=config.MAX_FEED_ITEMS,
         use_graphql=config.USE_GRAPHQL,
     )
+
+
+# ---------- pre-filter (zero cost) ----------
+
+BLOCKED_MERCHANTS = {
+    "aliexpress", "temu", "shein", "wish", "banggood",
+    "lightinthebox", "joom", "dhgate", "veepee",
+}
+
+BLOCKED_KEYWORDS = [
+    # Car maintenance (audience has no car)
+    "winterreifen", "sommerreifen", "ganzjahresreifen", "autobatterie",
+    "kfz-versicherung", "motoröl",
+    # Tobacco & vapes
+    "vape", "e-zigarette", "tabak", "liquid",
+    # Gambling
+    "casino", "spielbank", "sportwetten", "tipico", "bwin",
+    # Video games
+    "[ps5]", "[ps4]", "[playstation 5]", "[playstation 4]", "[playstation store]",
+    "[xbox]", "[nintendo switch]", "steam key", "playstation 5", "playstation 4",
+]
+
+
+def is_hard_reject(deal):
+    """Zero-ambiguity reject filter. Preserves all 0€ deals, freebies, and services."""
+    shop = ((deal.get("merchant") or "") + " " + (deal.get("link_host") or "")).lower()
+    for b in BLOCKED_MERCHANTS:
+        if b in shop:
+            return True, f"blocked merchant: {b}"
+
+    title = (deal.get("title") or "").lower()
+    for kw in BLOCKED_KEYWORDS:
+        if kw in title:
+            return True, f"hard reject keyword: {kw}"
+
+    return False, ""
 
 
 # ---------- score ----------
@@ -191,6 +227,85 @@ def score(deals):
     raise SystemExit("All providers failed:\n  " + "\n  ".join(failures))
 
 
+DECISION_PROMPT = """You are the editorial filter for a small Telegram deals channel in Berlin.
+Here is the channel's strict editorial policy and brand guidelines:
+
+<policy>
+{rules}
+</policy>
+
+<brands>
+{brands}
+</brands>
+
+Here are candidate deals from mydealz.de:
+
+<deals>
+{deals}
+</deals>
+"""
+
+
+def build_decision_context(deals):
+    listing = "\n\n".join(format_deal(i, d) for i, d in enumerate(deals))
+    return DECISION_PROMPT.format(
+        rules=config.read_doc("rules.md"),
+        brands=config.read_doc("brands.md"),
+        deals=listing,
+    )
+
+
+def score_two_stage(deals):
+    """Two-stage scoring:
+    Stage 1: gemini-decision-1 filters deals with threshold (default 0.5) at $0 output cost.
+    Stage 2: Gemini Flash verifies survivors and generates the 1-sentence Telegram reason.
+    Falls back gracefully to standard score() if Stage 1 is disabled or fails.
+    """
+    if not config.DECISION_ENABLED or len(deals) <= 3:
+        return score(deals)
+
+    api_key_env = config.DECISION_API_KEY_ENV
+    api_key = os.environ.get(api_key_env)
+    if not api_key:
+        print(
+            f"Decision API key ({api_key_env}) unset, falling back to direct scoring",
+            file=sys.stderr,
+        )
+        return score(deals)
+
+    try:
+        print(f"Stage 1: evaluating {len(deals)} deals with {config.DECISION_MODEL}...")
+        context = build_decision_context(deals)
+        scores = call_gemini_decision(context, deals, config.DECISION_MODEL, api_key)
+
+        survivors = []
+        for i, d in enumerate(deals):
+            score_val = scores.get(i, 0.0)
+            if score_val >= config.DECISION_THRESHOLD:
+                survivors.append({**d, "_stage1_score": score_val})
+
+        print(
+            f"Stage 1 complete: {len(survivors)} / {len(deals)} deals passed threshold "
+            f"({config.DECISION_THRESHOLD})"
+        )
+
+        if not survivors:
+            print("No deals met Stage 1 threshold. Exiting without Stage 2 call.")
+            return []
+
+        # Sort survivors by stage 1 score descending if more than max_candidates
+        survivors.sort(key=lambda x: x.get("_stage1_score", 0.0), reverse=True)
+        survivors = survivors[: config.MAX_CANDIDATES]
+
+        print(f"Stage 2: verifying and generating reasons for {len(survivors)} survivor(s)...")
+        picks = score(survivors)
+        return picks
+
+    except Exception as exc:
+        print(f"Stage 1 failed ({exc}), falling back to direct scoring", file=sys.stderr)
+        return score(deals)
+
+
 # ---------- send ----------
 
 def send_for_review(deal, token, chat_id):
@@ -264,8 +379,26 @@ def main():
     if not deals:
         return
 
+    # Pre-filter obvious hard rejects (zero token cost)
+    filtered = []
+    dropped = 0
+    for d in deals:
+        rej, _ = is_hard_reject(d)
+        if rej:
+            dropped += 1
+        else:
+            filtered.append(d)
+    if dropped:
+        print(f"Pre-filter dropped {dropped} obvious junk deals ({len(filtered)} remain)")
+
+    if not filtered:
+        print("No deals remaining after pre-filter")
+        seen.extend(d["id"] for d in deals)
+        kv.put_json("seen", seen[-3000:])
+        return
+
     print("Scoring:")
-    picks = score(deals)
+    picks = score_two_stage(filtered)
     print(f"{len(picks)} candidates")
 
     for deal in picks:

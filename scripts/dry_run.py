@@ -14,7 +14,14 @@ import os
 import sys
 
 import config
-from fetch_and_score import available_providers, build_prompt, extract_picks, fetch_deals
+from fetch_and_score import (
+    available_providers,
+    build_prompt,
+    extract_picks,
+    fetch_deals,
+    is_hard_reject,
+    score_two_stage,
+)
 from providers import REGISTRY
 
 
@@ -22,6 +29,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--provider", help="force one provider, skipping the fallback list")
     ap.add_argument("--show-all", action="store_true", help="also list every fetched deal")
+    ap.add_argument(
+        "--direct",
+        action="store_true",
+        help="bypass stage 1 decision model and score directly",
+    )
     args = ap.parse_args()
 
     print("Fetching feeds:")
@@ -30,29 +42,49 @@ def main():
     if not deals:
         return
 
+    # Pre-filter
+    filtered = []
+    dropped = 0
+    for d in deals:
+        rej, reason = is_hard_reject(d)
+        if rej:
+            dropped += 1
+        else:
+            filtered.append(d)
+    if dropped:
+        print(f"Pre-filter dropped {dropped} obvious junk deals ({len(filtered)} remain)\n")
+
     if args.show_all:
-        print("All fetched deals:")
-        for i, d in enumerate(deals):
+        print("Candidate deals for scoring:")
+        for i, d in enumerate(filtered):
             print(f"  [{i:>3}] {d['temperature'] or '---':>5}° {d['title'][:90]}")
         print()
 
-    providers = available_providers()
-    if args.provider:
-        providers = [(n, s) for n, s in providers if n == args.provider]
+    if not filtered:
+        print("No deals remaining after pre-filter.")
+        return
+
+    if args.direct or args.provider:
+        providers = available_providers()
+        if args.provider:
+            providers = [(n, s) for n, s in providers if n == args.provider]
+            if not providers:
+                raise SystemExit(
+                    f"Provider '{args.provider}' has no API key set, or isn't in config.toml"
+                )
+
         if not providers:
-            raise SystemExit(
-                f"Provider '{args.provider}' has no API key set, or isn't in config.toml"
-            )
+            raise SystemExit("No provider has its API key set")
 
-    if not providers:
-        raise SystemExit("No provider has its API key set")
+        name, settings = providers[0]
+        model = settings.get("model", "")
+        print(f"Scoring directly with {name} ({model})...\n")
 
-    name, settings = providers[0]
-    model = settings.get("model", "")
-    print(f"Scoring with {name} ({model})...\n")
-
-    raw = REGISTRY[name](build_prompt(deals), model, os.environ[settings["api_key_env"]])
-    picks = extract_picks(raw, deals)
+        raw = REGISTRY[name](build_prompt(filtered), model, os.environ[settings["api_key_env"]])
+        picks = extract_picks(raw, filtered)
+    else:
+        print("Scoring with two-stage pipeline...\n")
+        picks = score_two_stage(filtered)
 
     if not picks:
         print("No picks. That's a valid outcome if nothing today fits the policy.")
