@@ -30,7 +30,7 @@ api_key_env = "GEMINI_API_KEY"
 [decision]
 enabled = true
 model = "gemini-decision-1"
-threshold = 0.5
+threshold = 0.10
 api_key_env = "GEMINI_API_KEY"
 
 [groq]

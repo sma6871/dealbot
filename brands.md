@@ -58,8 +58,9 @@ Resellers with good approval rates:
 ## Apps, AI, and services — genuine, postable
 
 - ChatGPT / OpenAI
-- Google Gemini / Google AI Pro
+- Google Gemini / Google AI Pro (Google One AI)
 - Claude
+- Perplexity
 - NextDNS
 - YouTube Premium (direct/clean offers, not Turkey Apple ID tricks)
 - NordVPN
@@ -68,14 +69,39 @@ Resellers with good approval rates:
 - Revolut (partner perks / subscription bundles)
 - Wolt (delivery/grocery vouchers)
 
-## Electronics brands worth a post
+## Banking, fintech & utilities — genuine sign-up bonuses
 
-For phones, TVs, audio.
+- C24 Bank
+- N26
+- DKB
+- ING
+- Trade Republic
+- Ostrom (green electricity bonus)
+- Vattenfall (energy switch bonus)
 
-- Apple (iPhone — check Idealo before surfacing Watch/accessories)
+## Electronics & audio brands worth a post
+
+For phones, TVs, audio, laptops.
+
+- Apple (iPhone, MacBook, iPad, Watch — check Idealo first)
 - Samsung (Galaxy S/Ultra phones; QLED/OLED TVs — skip Crystal UHD)
-- Google (Pixel)
+- Google (Pixel phones, Pixel Buds)
 - Xiaomi (flagships like 17T / Pro only)
+- Sony (WH-1000XM headphones, Alpha cameras)
+- Bose (QuietComfort headphones/earbuds)
+
+## Top home appliances worth a post
+
+Premium models with standout discounts (especially 20%+ during Black Friday).
+
+- Dyson (V-series / Gen5 vacuums, Airwrap, Supersonic)
+- Philips (Sonicare toothbrushes, Airfryer XXL)
+- De'Longhi (Magnifica, Specialista espresso machines)
+- Braun (Series 8 / 9 shavers)
+- Roborock (S-series / Q-series robot vacuums)
+- Dreame (L-series / X-series robot vacuums)
+- Ninja (Dual-zone air fryers, Creami, blenders)
+- Bosch (Bosch Pro power tools, Serie 6/8 appliances)
 
 ## Electronics brands — explicitly not interesting
 

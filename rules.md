@@ -51,8 +51,9 @@ What this means in practice:
   credits (e.g. AWS Free Tier), and offers gated behind rare loyalty tiers
   (e.g. Google Play Pass Gold).
 - Gambling, betting, crypto, credit cards, insurance, loans, referral schemes.
-  *(Mainstream everyday payment-app promos like PayPal or Revolut bonuses are
-  NOT rejected here — see below.)*
+  *(Mainstream everyday banking, payment, and utility switch bonuses like
+  PayPal, Revolut, C24 Bank, N26, DKB, ING, Trade Republic, or electricity
+  switches like Ostrom/Vattenfall are NOT rejected here — see below.)*
 - Adult products, weapons, tobacco, vapes.
 - Decorative or single-purpose household objects: shelves, drawers, Lego,
   ornaments, kitchen gadgets.
@@ -80,18 +81,37 @@ Still reject:
 - Anything requiring foreign-region accounts, hard multi-step workarounds, or
   student/trainee-only verification.
 
-## Major storewide retail & payment promotions — strong category
+## Major storewide retail, financial & utility promotions — strong category
 
 Do NOT apply the 50% single-product rule to these:
 
-- **Nationwide storewide retail events** at major trusted retailers — e.g.
-  **MediaMarkt / Saturn 19% MwSt-Aktion (VAT-off)**, Prime Day / Black Friday
-  broad sitewide promos, or broad brand-wide Corporate Benefits discounts
-  (e.g. 30%+ off across Adidas). These are high-value posts for everyone in
-  Germany even though the headline discount is 16-30%.
-- **Mainstream payment & fintech bonuses:** Straightforward cashback, bonus,
-  or partner perks from everyday payment platforms in Germany (**PayPal**,
-  **Revolut**).
+- **Nationwide storewide retail events & Black Friday hubs:** Major trusted
+  retailers — e.g. **MediaMarkt / Saturn 19% MwSt-Aktion (VAT-off)**, Prime Day /
+  Black Friday sitewide promos, broad brand-wide Corporate Benefits discounts
+  (e.g. 30%+ off across Adidas), and central **Black Friday community overview
+  hubs** (e.g. Amazon Black Week central deal collection).
+- **Mainstream payment & banking bonuses:** Straightforward cashback, welcome
+  bonus, or partner perks from popular everyday financial institutions in
+  Germany (**PayPal**, **Revolut**, **C24 Bank**, **N26**, **DKB**, **ING**,
+  **Trade Republic**).
+- **Electricity & energy provider switches:** Clean, easy switches with
+  substantial sign-up bonuses or cashback (e.g. **Ostrom**, **Vattenfall**,
+  **E.ON**, or Check24/Verivox energy bonus promos with transparent pricing and
+  monthly cancellation).
+
+## Black Friday & Cyber Week season — special pricing rules
+
+During Black Friday / Cyber Week (late November), premium products rarely drop
+by 50%. Do NOT enforce the 50% discount floor during this period:
+
+- A discount of **20%+ under normal/Idealo price** is plenty for:
+  - **Halo tech & electronics:** Apple (MacBook, iPhone, iPad, Apple Watch),
+    Sony (WH-1000XM headphones, cameras), Bose, Google Pixel, Samsung (OLED TVs,
+    Galaxy Ultra).
+  - **Top home appliances:** Dyson (vacuums, haircare), Philips (Sonicare,
+    Airfryer), De'Longhi (espresso machines), Braun (Series 8/9 razors),
+    Roborock & Dreame (robot vacuums), Ninja (air fryers, blenders), Bosch Pro.
+  - **Major curated hubs:** Central Amazon / MediaMarkt Black Week threads.
 
 ## Free physical items
 
@@ -117,6 +137,10 @@ price) AND falls into one of these categories:
 - **TVs:** Quality panels only (OLED, QLED, Mini-LED) at a standout price. Skip
   entry-level models (e.g. Crystal UHD) and offline-only store specials outside
   Berlin.
+- **Top home appliances:** Premium kitchen, cleaning, coffee, and grooming gear
+  from top brands (Dyson, Philips Sonicare/Airfryer, De'Longhi espresso
+  machines, Braun Series razors, Roborock / Dreame robot vacuums, Ninja, Bosch
+  Pro) at a standout price (30%+ normally, 20%+ during Black Friday).
 
 ## Mobile contracts — a core category, but be selective on SIM-only
 

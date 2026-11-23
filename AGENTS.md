@@ -121,10 +121,17 @@ This was learned the hard way — see "Gotchas".
 
 - **Two-stage scoring with `gemini-decision-1`.** Evaluates deals against
   `rules.md` via the Gemini Decisions API (`v1beta/decisions`) at $0.10/1M input
-  and $0 output tokens. If 0 deals pass threshold (0.5), the run exits without
-  calling Gemini Flash. Only survivors (1–4 deals) are passed to Flash for TCO
+  and $0 output tokens. Uses a calibrated threshold of 0.10 (with Top-K
+  fallback ensuring the top 4–6 highest-scoring deals pass to Stage 2) and
+  fact-enriched instructions. Stage 2 (Flash) runs on survivors to compute TCO
   math and the Telegram reason. Drops passive background run costs by ~88% while
-  preserving human-readable reasons in Telegram.
+  preventing zero-deal bottlenecks.
+
+- **Black Friday / Cyber Week policy exception.** Relaxes the 50% discount floor
+  down to 20%+ for premium tech (Apple, Sony, Bose, Pixel), top home appliances
+  (Dyson, Philips, De'Longhi, Braun, Roborock, Ninja), essential German utilities
+  (Ostrom, Vattenfall energy switch bonuses), and banking/fintech (C24, Revolut,
+  N26, DKB, ING, PayPal).
 
 - **Zero-risk pre-filter in Python.** Hard rejects (Shein/AliExpress/Temu, car
   tires, vapes, gambling, console games) are dropped in Python before any API

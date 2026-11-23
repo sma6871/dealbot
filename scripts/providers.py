@@ -58,11 +58,31 @@ def call_gemini_decision(context, deals, model, api_key):
     questions = {}
     for i, deal in enumerate(deals):
         title = (deal.get("title") or "")[:120].replace('"', "'")
+        price = deal.get("price")
+        was = deal.get("next_best_price")
+        shop = deal.get("merchant") or deal.get("link_host") or "unknown"
+
+        fact_parts = [f"Shop: {shop}"]
+        if price is not None:
+            fact_parts.append(f"Price: {price}€")
+        if was is not None:
+            fact_parts.append(f"Was: {was}€")
+            if price:
+                try:
+                    off = round((1 - float(price) / float(was)) * 100)
+                    fact_parts.append(f"{off}% off")
+                except (ZeroDivisionError, ValueError, TypeError):
+                    pass
+        if deal.get("type"):
+            fact_parts.append(f"Type: {deal['type']}")
+
+        facts_str = " | ".join(fact_parts)
         questions[f"deal_{i}"] = {
             "type": "noul",
             "instructions": (
-                f"Should Deal [{i}] ('{title}') be posted to @berliner_deals per the "
-                f"editorial policy? Answer yes only if it strictly qualifies."
+                f"Deal [{i}]: '{title}' ({facts_str}). "
+                f"Based on the editorial policy, should this deal be posted to @berliner_deals? "
+                f"Answer yes if it qualifies or shows strong potential."
             ),
         }
 

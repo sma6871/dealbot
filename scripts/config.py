@@ -38,7 +38,7 @@ DESCRIPTION_CHARS = _source.get("description_chars", 1500)
 _decision = _cfg.get("decision", {})
 DECISION_ENABLED = _decision.get("enabled", True)
 DECISION_MODEL = _decision.get("model", "gemini-decision-1")
-DECISION_THRESHOLD = float(_decision.get("threshold", 0.5))
+DECISION_THRESHOLD = float(_decision.get("threshold", 0.10))
 DECISION_API_KEY_ENV = _decision.get("api_key_env", "GEMINI_API_KEY")
 
 # Per-provider settings: {"gemini": {"model": ..., "api_key_env": ...}, ...}

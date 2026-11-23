@@ -285,12 +285,25 @@ def score_two_stage(deals):
                 survivors.append({**d, "_stage1_score": score_val})
 
         print(
-            f"Stage 1 complete: {len(survivors)} / {len(deals)} deals passed threshold "
+            f"Stage 1: {len(survivors)} / {len(deals)} deals passed threshold "
             f"({config.DECISION_THRESHOLD})"
         )
 
+        # Ensure top candidate deals reach Stage 2: if fewer than 4 passed,
+        # include the highest-scoring deals (as long as score >= 0.05) up to 6 deals.
+        if len(survivors) < 4:
+            ranked = sorted(
+                [(i, scores.get(i, 0.0)) for i in range(len(deals))],
+                key=lambda x: x[1],
+                reverse=True,
+            )
+            survivor_ids = {d["id"] for d in survivors}
+            for idx, s in ranked[:6]:
+                if s >= 0.05 and deals[idx]["id"] not in survivor_ids:
+                    survivors.append({**deals[idx], "_stage1_score": s})
+
         if not survivors:
-            print("No deals met Stage 1 threshold. Exiting without Stage 2 call.")
+            print("No deals met Stage 1 criteria. Exiting without Stage 2 call.")
             return []
 
         # Sort survivors by stage 1 score descending if more than max_candidates
