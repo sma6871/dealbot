@@ -89,9 +89,9 @@ def call_gemini_decision(context, deals, model, api_key):
     model_path = model if model.startswith("models/") else f"models/{model}"
     payload = {
         "model": model_path,
-        "input": {
-            "contents": [{"parts": [{"text": context}]}]
-        },
+        "input": [
+            {"type": "text", "text": context}
+        ],
         "questions": questions,
     }
 

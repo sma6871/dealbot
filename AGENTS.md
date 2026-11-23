@@ -306,6 +306,9 @@ Each of these cost real time. Don't rediscover them.
   `v1beta/decisions` returns an `answers` object where `noul` is the calibrated
   Yes probability (0.0 to 1.0). Pricing is $0.10/1M input and $0 output tokens.
   If it errors, `score_two_stage` falls back to direct Flash scoring.
+  Unlike the generative endpoint, the payload expects `input: [{"type": "text", "text": "..."}]`
+  rather than `contents: [{"parts": ...}]`. Omitting `"type"` returns HTTP 400
+  (`The 'type' parameter is required at 'input[0]'`).
 ---
 
 ## Conventions
