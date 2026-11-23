@@ -41,23 +41,38 @@ async function tg(env, method, payload) {
   return r;
 }
 
-// Telegram caps photo captions at 1024 chars, but a LINK PREVIEW image has no
-// caption limit. So we embed the image as an invisible anchor and let Telegram
-// render it above the text. Full-length bilingual posts keep working.
-function withPreview(deal, text) {
-  const img = deal?.image_url;
-  if (!img) {
-    return { text, link_preview_options: { is_disabled: true } };
-  }
-  return {
-    // Zero-width space as the anchor body: invisible, but Telegram sees the URL.
-    text: `<a href="${esc(img)}">\u200b</a>${text}`,
-    link_preview_options: {
-      url: img,
-      prefer_large_media: true,
-      show_above_text: true,
-    },
-  };
+const URL_RE = /https?:\/\/[^\s<>"']+/;
+
+function parseLinkLine(text) {
+  // "link: https://..." or "url: https://..." anywhere in the message
+  const m = (text || "").match(/^\s*(?:link|url)\s*:\s*(\S+)/im);
+  if (m && URL_RE.test(m[1])) return m[1];
+  return null;
+}
+
+function parseImageLine(text) {
+  // "image: https://..." or "img: https://..." or "photo: https://..."
+  const m = (text || "").match(/^\s*(?:image|img|photo)\s*:\s*(\S+)/im);
+  if (m && URL_RE.test(m[1])) return m[1];
+  return null;
+}
+
+function isRemoveImage(text) {
+  return /^\s*(?:remove|drop|delete|no)\s*(?:image|photo|pic|img)\b/i.test(text || "");
+}
+
+function shortenPrompt(env, text) {
+  return `Condense this bilingual Telegram deal post so its TOTAL length is strictly under 1,000 characters (Telegram photo captions cannot exceed 1,024 characters).
+
+Current text (${text.length} characters):
+${text}
+
+Rules:
+- Keep the bilingual structure: English section first, separator line (━━━━━━━━━━━━━━━━━━━━━━), then Persian section.
+- Keep all crucial offer facts: product/deal name, price, original price, merchant/shop name, voucher code if any, and core steps.
+- Persian numerals in the Persian block.
+- Tighten sentences, omit non-essential commentary, and keep explanations brief and punchy.
+- Return ONLY the condensed post with valid Telegram HTML tags (<b>, <i>, <a href="...">). No markdown fences, no preamble.`;
 }
 
 async function notifyOwner(env, text) {
@@ -210,7 +225,30 @@ Rules:
 - Use Telegram HTML: <b>, <i>, <a href="">. No other tags.`;
 }
 
-async function sendDraft(env, chatId, deal, text, edits, dealUrl) {
+function makeDraftKb(deal, dealUrl) {
+  const kbRows = [];
+  if (dealUrl) {
+    let label = "🛒 Deal Link";
+    try {
+      label = `🛒 Link: ${new URL(dealUrl).hostname.replace(/^www\./, "")}`;
+    } catch {}
+    kbRows.push([{ text: label, url: dealUrl }]);
+  } else {
+    const shop = deal?.merchant || deal?.link_host || null;
+    kbRows.push([{
+      text: `⚠️ No deal link yet${shop ? ` (${shop})` : ""}`,
+      callback_data: "edit",
+    }]);
+  }
+  kbRows.push([
+    { text: "✅ Send", callback_data: "send" },
+    { text: "✏️ Edit", callback_data: "edit" },
+    { text: "❌ Discard", callback_data: "discard" },
+  ]);
+  return { inline_keyboard: kbRows };
+}
+
+async function sendDraft(env, chatId, deal, text, edits, dealUrl, image = null) {
   if (text.length > TG_LIMIT) {
     await tg(env, "sendMessage", {
       chat_id: chatId,
@@ -219,37 +257,54 @@ async function sendDraft(env, chatId, deal, text, edits, dealUrl) {
     return;
   }
 
-  const shop = deal.merchant || deal.link_host || null;
+  const shop = deal?.merchant || deal?.link_host || null;
   // No angle brackets here — Telegram's HTML parser rejects unknown tags.
   const status = dealUrl
     ? `🛒 Link set: ${esc(dealUrl)}`
     : `⚠️ No deal link yet.${shop ? ` Shop is ${esc(shop)}.` : ""} Reply with "link: https://..." to add a button.`;
 
-  const preview = withPreview(deal, `${text}\n\n— ${status}`);
-  const payload = {
-    chat_id: chatId,
-    text: preview.text,
-    parse_mode: "HTML",
-    link_preview_options: preview.link_preview_options,
-    reply_markup: DRAFT_KB,
-  };
+  const draftKb = makeDraftKb(deal, dealUrl);
+  const hasPhoto = Boolean(image && (image.photoFileId || image.imageUrl) && text.length <= 1024);
 
-  let r = await tg(env, "sendMessage", payload);
-
-  // LLM-generated text can contain stray < or &. Retry as plain text.
-  if (!r.ok) {
-    const firstErr = await r.text();
-    console.error("HTML draft failed, retrying plain:", firstErr);
-    const plain = { ...payload };
-    delete plain.parse_mode;
-    r = await tg(env, "sendMessage", plain);
+  let r;
+  if (hasPhoto) {
+    const payload = {
+      chat_id: chatId,
+      photo: image.photoFileId || image.imageUrl,
+      caption: text,
+      parse_mode: "HTML",
+      reply_markup: draftKb,
+    };
+    r = await tg(env, "sendPhoto", payload);
     if (!r.ok) {
-      await notifyOwner(
-        env,
-        `❌ Could not send the draft:\n\n${(await r.text()).slice(0, 600)}`
-      );
-      return;
+      console.error("HTML draft photo failed, retrying plain:", await r.clone().text());
+      const plain = { ...payload };
+      delete plain.parse_mode;
+      r = await tg(env, "sendPhoto", plain);
     }
+  } else {
+    const payload = {
+      chat_id: chatId,
+      text: `${text}\n\n— ${status}`,
+      parse_mode: "HTML",
+      link_preview_options: { is_disabled: true },
+      reply_markup: draftKb,
+    };
+    r = await tg(env, "sendMessage", payload);
+    if (!r.ok) {
+      console.error("HTML draft failed, retrying plain:", await r.clone().text());
+      const plain = { ...payload };
+      delete plain.parse_mode;
+      r = await tg(env, "sendMessage", plain);
+    }
+  }
+
+  if (!r.ok) {
+    await notifyOwner(
+      env,
+      `❌ Could not send the draft:\n\n${(await r.text()).slice(0, 600)}`
+    );
+    return;
   }
 
   const body = await r.json().catch(() => null);
@@ -257,7 +312,13 @@ async function sendDraft(env, chatId, deal, text, edits, dealUrl) {
   if (mid) {
     await env.DEALBOT.put(
       `draft:${mid}`,
-      JSON.stringify({ deal, text, edits, dealUrl: dealUrl || null }),
+      JSON.stringify({
+        deal,
+        text,
+        edits,
+        dealUrl: dealUrl || null,
+        image: image || null,
+      }),
       { expirationTtl: 60 * 60 * 24 * 7 }
     );
   } else {
@@ -271,7 +332,7 @@ async function generateAndSendDraft(env, chatId, deal, edits, dealUrl) {
   await tg(env, "sendMessage", { chat_id: chatId, text: "Writing a draft…" });
   try {
     const text = await generate(env, draftPrompt(env, deal, edits));
-    await sendDraft(env, chatId, deal, text, edits, dealUrl);
+    await sendDraft(env, chatId, deal, text, edits, dealUrl, null);
   } catch (e) {
     await notifyOwner(env, `❌ Draft failed: ${e.message}`);
   }
@@ -355,6 +416,57 @@ async function handleCallback(env, cb) {
     return;
   }
 
+  // --- draft shortening / image dropping callbacks ---
+  if (action.startsWith("shorten:")) {
+    const targetMid = action.split(":")[1];
+    const draft = await kvJson(env, `draft:${targetMid}`, null);
+    await tg(env, "editMessageReplyMarkup", {
+      chat_id: chatId,
+      message_id: mid,
+      reply_markup: { inline_keyboard: [] },
+    });
+    if (!draft) {
+      await notifyOwner(env, "That draft expired or wasn't found.");
+      return;
+    }
+    await tg(env, "sendMessage", { chat_id: chatId, text: "Condensing post to < 1024 chars…" });
+    try {
+      const shortened = await generate(env, shortenPrompt(env, draft.text));
+      const image = draft.pendingImage || draft.image || null;
+      delete draft.pendingImage;
+      await env.DEALBOT.delete(`draft:${targetMid}`);
+      await sendDraft(
+        env,
+        chatId,
+        draft.deal,
+        shortened,
+        [...(draft.edits || []), "condensed < 1024 chars"],
+        draft.dealUrl,
+        image
+      );
+    } catch (e) {
+      await notifyOwner(env, `❌ Condensing failed: ${e.message}`);
+    }
+    return;
+  }
+
+  if (action.startsWith("drop_img:")) {
+    const targetMid = action.split(":")[1];
+    const draft = await kvJson(env, `draft:${targetMid}`, null);
+    await tg(env, "editMessageReplyMarkup", {
+      chat_id: chatId,
+      message_id: mid,
+      reply_markup: { inline_keyboard: [] },
+    });
+    if (draft) {
+      delete draft.pendingImage;
+      delete draft.image;
+      await env.DEALBOT.put(`draft:${targetMid}`, JSON.stringify(draft), { expirationTtl: 60 * 60 * 24 * 7 });
+    }
+    await tg(env, "sendMessage", { chat_id: chatId, text: "Kept original text. Image was dropped." });
+    return;
+  }
+
   // --- draft stage: send, edit, discard ---
   const draft = await kvJson(env, `draft:${mid}`, null);
   if (!draft) {
@@ -367,31 +479,63 @@ async function handleCallback(env, cb) {
       ? { inline_keyboard: [[{ text: "🛒 Get the deal · دریافت آفر", url: draft.dealUrl }]] }
       : undefined;
 
-    const preview = withPreview(draft.deal, draft.text);
-    const payload = {
-      chat_id: env.TELEGRAM_CHANNEL_ID,
-      text: preview.text,
-      parse_mode: "HTML",
-      link_preview_options: preview.link_preview_options,
-    };
-    if (markup) payload.reply_markup = markup;
+    const hasPhoto = Boolean(draft.image && (draft.image.photoFileId || draft.image.imageUrl));
+    let r;
 
-    let r = await tg(env, "sendMessage", payload);
-
-    // A stray < or & makes Telegram reject the whole message. Retry as plain text.
-    if (!r.ok) {
-      const firstErr = await r.text();
-      console.error("HTML post failed, retrying plain:", firstErr);
-      const plain = { ...payload };
-      delete plain.parse_mode;
-      r = await tg(env, "sendMessage", plain);
-      if (!r.ok) {
-        // Do NOT delete the draft — it stays recoverable.
+    if (hasPhoto) {
+      if (draft.text.length > 1024) {
         await notifyOwner(
           env,
-          `❌ Post failed, draft kept. Tap Send again after fixing.\n\n${(await r.text()).slice(0, 600)}`
+          `❌ Cannot post with image: caption is ${draft.text.length} chars (Telegram max 1024). Tap Edit and shorten it.`
         );
         return;
+      }
+      const payload = {
+        chat_id: env.TELEGRAM_CHANNEL_ID,
+        photo: draft.image.photoFileId || draft.image.imageUrl,
+        caption: draft.text,
+        parse_mode: "HTML",
+      };
+      if (markup) payload.reply_markup = markup;
+
+      r = await tg(env, "sendPhoto", payload);
+      if (!r.ok) {
+        const firstErr = await r.text();
+        console.error("HTML sendPhoto failed, retrying plain:", firstErr);
+        const plain = { ...payload };
+        delete plain.parse_mode;
+        r = await tg(env, "sendPhoto", plain);
+        if (!r.ok) {
+          await notifyOwner(
+            env,
+            `❌ Post failed, draft kept. Tap Send again after fixing.\n\n${(await r.text()).slice(0, 600)}`
+          );
+          return;
+        }
+      }
+    } else {
+      const payload = {
+        chat_id: env.TELEGRAM_CHANNEL_ID,
+        text: draft.text,
+        parse_mode: "HTML",
+        link_preview_options: { is_disabled: true },
+      };
+      if (markup) payload.reply_markup = markup;
+
+      r = await tg(env, "sendMessage", payload);
+      if (!r.ok) {
+        const firstErr = await r.text();
+        console.error("HTML post failed, retrying plain:", firstErr);
+        const plain = { ...payload };
+        delete plain.parse_mode;
+        r = await tg(env, "sendMessage", plain);
+        if (!r.ok) {
+          await notifyOwner(
+            env,
+            `❌ Post failed, draft kept. Tap Send again after fixing.\n\n${(await r.text()).slice(0, 600)}`
+          );
+          return;
+        }
       }
     }
 
@@ -401,12 +545,13 @@ async function handleCallback(env, cb) {
     await tg(env, "sendMessage", { chat_id: chatId, text: "Posted ✅" });
     await logDecision(env, {
       decision: "sent",
-      title: draft.deal.title,
-      link: draft.deal.link,
-      shop: draft.deal.merchant || draft.deal.link_host || "",
+      title: draft.deal?.title || "",
+      link: draft.deal?.link || "",
+      shop: draft.deal ? (draft.deal.merchant || draft.deal.link_host || "") : "",
       deal_url: draft.dealUrl || "",
       sent_text: draft.text,
-      edit_rounds: draft.edits.length,
+      has_image: hasPhoto,
+      edit_rounds: draft.edits?.length || 0,
     });
     await env.DEALBOT.delete(`draft:${mid}`);
     return;
@@ -422,7 +567,7 @@ async function handleCallback(env, cb) {
   }
 
   if (action === "edit") {
-    if (draft.edits.length >= MAX_EDIT_ROUNDS) {
+    if ((draft.edits || []).length >= MAX_EDIT_ROUNDS) {
       await tg(env, "sendMessage", {
         chat_id: chatId,
         text: `${MAX_EDIT_ROUNDS} edit rounds reached. Send it, discard it, or start over.`,
@@ -434,18 +579,11 @@ async function handleCallback(env, cb) {
       chat_id: chatId,
       text:
         'What should change? Reply in plain language, e.g. "shorter" or "add the TCO math".\n\n' +
-        'To attach the deal link as a button, reply "link: https://..."',
+        '• To attach deal button: reply "link: https://..."\n' +
+        '• To attach an image: send a photo directly, or reply "image: https://..."\n' +
+        (draft.image ? '• To remove attached image: reply "remove image"\n' : ""),
     });
   }
-}
-
-const URL_RE = /https?:\/\/[^\s<>"']+/;
-
-function parseLinkLine(text) {
-  // "link: https://..." or "url: https://..." anywhere in the message
-  const m = text.match(/^\s*(?:link|url)\s*:\s*(\S+)/im);
-  if (m && URL_RE.test(m[1])) return m[1];
-  return null;
 }
 
 async function handleDraftCommand(env, chatId, raw) {
@@ -518,8 +656,10 @@ async function handleMissedCommand(env, chatId, raw) {
 async function handleMessage(env, msg) {
   const chatId = String(msg.chat.id);
   if (chatId !== String(env.TELEGRAM_ADMIN_CHAT_ID)) return;
-  const text = (msg.text || "").trim();
-  if (!text) return;
+
+  const hasPhoto = Array.isArray(msg.photo) && msg.photo.length > 0;
+  const text = (msg.text || msg.caption || "").trim();
+  if (!text && !hasPhoto) return;
 
   if (/^\/draft\b/i.test(text)) {
     await handleDraftCommand(env, chatId, text);
@@ -575,7 +715,7 @@ async function handleMessage(env, msg) {
   const awaiting = await env.DEALBOT.get(`awaiting:${chatId}`);
   if (!awaiting) return;
 
-  // Edit instruction, or a link, for a draft
+  // Edit instruction, image, or link for a draft
   if (awaiting.startsWith("draft:")) {
     const draft = await kvJson(env, awaiting, null);
     if (!draft) {
@@ -584,26 +724,183 @@ async function handleMessage(env, msg) {
       return;
     }
 
-    const link = parseLinkLine(text);
-    if (link) {
-      // Attaching a link doesn't need a regeneration — the URL is a button.
+    const draftMid = awaiting.replace("draft:", "");
+
+    // Text confirmation to shorten when pendingImage exists
+    if (draft.pendingImage && /^\s*(?:shorten|condense|yes|ok)\b/i.test(text)) {
       await env.DEALBOT.delete(`awaiting:${chatId}`);
-      await env.DEALBOT.delete(awaiting);
-      await sendDraft(env, chatId, draft.deal, draft.text, draft.edits, link);
+      await tg(env, "sendMessage", { chat_id: chatId, text: "Condensing post to < 1024 chars…" });
+      try {
+        const shortened = await generate(env, shortenPrompt(env, draft.text));
+        const image = draft.pendingImage;
+        delete draft.pendingImage;
+        await env.DEALBOT.delete(awaiting);
+        await tg(env, "editMessageReplyMarkup", {
+          chat_id: chatId, message_id: draftMid, reply_markup: { inline_keyboard: [] },
+        }).catch(() => {});
+        await sendDraft(
+          env,
+          chatId,
+          draft.deal,
+          shortened,
+          [...(draft.edits || []), "condensed < 1024 chars"],
+          draft.dealUrl,
+          image
+        );
+      } catch (e) {
+        await notifyOwner(env, `❌ Condensing failed: ${e.message}`);
+      }
       return;
     }
 
-    await env.DEALBOT.delete(`awaiting:${chatId}`);
-    const edits = [...draft.edits, text];
-    await tg(env, "sendMessage", { chat_id: chatId, text: "Revising…" });
-    try {
-      const newText = await generate(env, draftPrompt(env, draft.deal, edits));
-      await sendDraft(env, chatId, draft.deal, newText, edits, draft.dealUrl);
+    // Command to remove image
+    if (isRemoveImage(text)) {
+      await env.DEALBOT.delete(`awaiting:${chatId}`);
       await env.DEALBOT.delete(awaiting);
-    } catch (e) {
-      await notifyOwner(env, `❌ Revision failed, draft kept: ${e.message}`);
+      await tg(env, "editMessageReplyMarkup", {
+        chat_id: chatId, message_id: draftMid, reply_markup: { inline_keyboard: [] },
+      }).catch(() => {});
+      await sendDraft(env, chatId, draft.deal, draft.text, draft.edits, draft.dealUrl, null);
+      await tg(env, "sendMessage", { chat_id: chatId, text: "Image removed 🗑️" });
+      return;
     }
-    return;
+
+    // Check for photo attachment (direct photo upload or URL)
+    let photoFileId = null;
+    if (hasPhoto) {
+      const best = msg.photo[msg.photo.length - 1];
+      photoFileId = best.file_id;
+    }
+    const imageUrl = parseImageLine(text);
+    const newImage = photoFileId ? { photoFileId } : (imageUrl ? { imageUrl } : null);
+
+    // Check for link button
+    const link = parseLinkLine(text);
+    if (link && !newImage) {
+      await env.DEALBOT.delete(`awaiting:${chatId}`);
+      await env.DEALBOT.delete(awaiting);
+      await tg(env, "editMessageReplyMarkup", {
+        chat_id: chatId, message_id: draftMid, reply_markup: { inline_keyboard: [] },
+      }).catch(() => {});
+      await sendDraft(env, chatId, draft.deal, draft.text, draft.edits, link, draft.image);
+      return;
+    }
+
+    if (newImage) {
+      let instruction = text;
+      if (imageUrl) {
+        instruction = text.replace(/^\s*(?:image|img|photo)\s*:\s*\S+/im, "").trim();
+      }
+
+      let currentText = draft.text;
+      let currentEdits = draft.edits || [];
+
+      if (instruction) {
+        await tg(env, "sendMessage", { chat_id: chatId, text: "Revising text & attaching image…" });
+        currentEdits = [...currentEdits, instruction];
+        try {
+          currentText = await generate(env, draftPrompt(env, draft.deal, currentEdits));
+        } catch (e) {
+          await notifyOwner(env, `❌ Revision failed: ${e.message}`);
+          return;
+        }
+      }
+
+      // Check caption length against Telegram 1024 limit
+      if (currentText.length <= 1024) {
+        await env.DEALBOT.delete(`awaiting:${chatId}`);
+        await env.DEALBOT.delete(awaiting);
+        await tg(env, "editMessageReplyMarkup", {
+          chat_id: chatId, message_id: draftMid, reply_markup: { inline_keyboard: [] },
+        }).catch(() => {});
+        await sendDraft(
+          env,
+          chatId,
+          draft.deal,
+          currentText,
+          currentEdits,
+          draft.dealUrl,
+          newImage
+        );
+        return;
+      } else {
+        // Exceeds 1024: store pendingImage and prompt owner to confirm shortening
+        draft.text = currentText;
+        draft.edits = currentEdits;
+        draft.pendingImage = newImage;
+        await env.DEALBOT.put(awaiting, JSON.stringify(draft), { expirationTtl: 60 * 60 * 24 * 7 });
+
+        await tg(env, "sendMessage", {
+          chat_id: chatId,
+          text:
+            `⚠️ <b>Post is too long for a photo caption</b> (${currentText.length} characters; Telegram caption limit is 1,024).\n\n` +
+            `Would you like me to condense it to fit under 1,024 characters?`,
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: "✂️ Shorten to < 1024 chars", callback_data: `shorten:${draftMid}` },
+                { text: "Keep text (drop image)", callback_data: `drop_img:${draftMid}` },
+              ],
+            ],
+          },
+        });
+        return;
+      }
+    }
+
+    // Plain text revision (no image provided this turn)
+    if (text) {
+      await env.DEALBOT.delete(`awaiting:${chatId}`);
+      const edits = [...(draft.edits || []), text];
+      await tg(env, "sendMessage", { chat_id: chatId, text: "Revising…" });
+      try {
+        const newText = await generate(env, draftPrompt(env, draft.deal, edits));
+
+        // If draft previously had an image attached and the revised text now exceeds 1024
+        if (draft.image && newText.length > 1024) {
+          draft.text = newText;
+          draft.edits = edits;
+          draft.pendingImage = draft.image;
+          delete draft.image;
+          await env.DEALBOT.put(awaiting, JSON.stringify(draft), { expirationTtl: 60 * 60 * 24 * 7 });
+
+          await tg(env, "sendMessage", {
+            chat_id: chatId,
+            text:
+              `⚠️ <b>Revised post is too long for the attached photo</b> (${newText.length} characters; Telegram caption limit is 1,024).\n\n` +
+              `Would you like me to condense it to fit under 1,024 characters?`,
+            parse_mode: "HTML",
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: "✂️ Shorten to < 1024 chars", callback_data: `shorten:${draftMid}` },
+                  { text: "Keep text (drop image)", callback_data: `drop_img:${draftMid}` },
+                ],
+              ],
+            },
+          });
+          return;
+        }
+
+        await env.DEALBOT.delete(awaiting);
+        await tg(env, "editMessageReplyMarkup", {
+          chat_id: chatId, message_id: draftMid, reply_markup: { inline_keyboard: [] },
+        }).catch(() => {});
+        await sendDraft(
+          env,
+          chatId,
+          draft.deal,
+          newText,
+          edits,
+          draft.dealUrl,
+          draft.image
+        );
+      } catch (e) {
+        await notifyOwner(env, `❌ Revision failed, draft kept: ${e.message}`);
+      }
+      return;
+    }
   }
 
   // Reason for a review decision or a batch 👎

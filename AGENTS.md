@@ -133,6 +133,12 @@ This was learned the hard way — see "Gotchas".
   (Ostrom, Vattenfall energy switch bonuses), and banking/fintech (C24, Revolut,
   N26, DKB, ING, PayPal).
 
+- **Custom image workflow via Telegram DM.** Original mydealz images are omitted
+  by default. The owner attaches custom generated images directly in the DM edit
+  loop by sending a photo or replying `image: <url>`. If post length exceeds
+  Telegram's 1,024-char photo caption limit, the worker prompts with a 1-tap
+  button to automatically condense the post text via Gemini to < 1,024 chars.
+
 - **Zero-risk pre-filter in Python.** Hard rejects (Shein/AliExpress/Temu, car
   tires, vapes, gambling, console games) are dropped in Python before any API
   call. Never filters on price so €0 deals, freebies, and rare cheap
@@ -205,9 +211,6 @@ Ordered by value, highest first.
 Do not build these without the owner explicitly asking. Each was considered and
 postponed for a stated reason.
 
-- **Image posts.** Every deal already carries `image_url` from GraphQL. Blocked
-  on: captions cap at 1024 chars and the bilingual posts often exceed that, so it
-  needs photo + separate text logic. Also unclear how often it's actually wanted.
 - **Expired post auto-marking.** `sync.yml` could check `isExpired` and edit
   posted messages to prepend ⛔️. Needs the Worker to store `posted:<msg_id>`
   first. Not worth it below a few posts a week. Cheaper fix: always include
